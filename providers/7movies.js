@@ -1,6 +1,6 @@
 /**
  * 7movies - Built from src/7movies/
- * Generated: 2026-11-07T12:22:38.332Z
+ * Generated: 2026-11-07T12:30:22.925Z
  */
 var __async = (__this, __arguments, generator) => {
   return new Promise((resolve, reject) => {
@@ -25,6 +25,7 @@ var __async = (__this, __arguments, generator) => {
 
 // src/7movies/index.js
 var UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36";
+var MEDIA_UA = "okhttp/4.12.0";
 var VIDLINK_API = "https://vidlink.pro/api/b";
 var ENC_API = "https://enc-dec.app/api/enc-vidlink";
 var VIDLINK_HEADERS = {
@@ -157,7 +158,7 @@ function mapSubtitles(captions) {
       url: c.url,
       language: code,
       name: String(name),
-      headers: { "User-Agent": UA }
+      headers: { "User-Agent": MEDIA_UA }
     });
   }
   return out;
@@ -168,7 +169,9 @@ function playbackHeaders(qualityData, streamData) {
     streamData && streamData.headers || {},
     qualityData && qualityData.headers || {}
   );
-  const h = {};
+  const h = {
+    "User-Agent": MEDIA_UA
+  };
   for (const k of Object.keys(src)) {
     const val = src[k];
     if (val) {
@@ -176,13 +179,13 @@ function playbackHeaders(qualityData, streamData) {
         h["Referer"] = val;
       else if (k.toLowerCase() === "origin")
         h["Origin"] = val;
-      else if (k.toLowerCase() === "user-agent")
-        h["User-Agent"] = val;
-      else
+      else if (k.toLowerCase() === "user-agent") {
+        h["User-Agent"] = val.includes("Mozilla") ? MEDIA_UA : val;
+      } else
         h[k] = val;
     }
   }
-  return Object.keys(h).length > 0 ? h : void 0;
+  return h;
 }
 function resolveAgainst(url, base) {
   if (!url || url.startsWith("http"))

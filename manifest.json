@@ -1,12 +1,12 @@
 {
   "name": "7Movies",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "scrapers": [
     {
       "id": "7movies",
       "name": "7Movies",
       "description": "7movies.ac sources (VidLink upstream) - direct MP4/HLS with subtitles",
-      "version": "1.0.1",
+      "version": "1.0.2",
       "author": "Anh Pham",
       "supportedTypes": ["movie", "tv"],
       "filename": "providers/7movies.js",

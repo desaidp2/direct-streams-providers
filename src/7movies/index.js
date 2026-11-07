@@ -13,6 +13,7 @@
 
 const UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36";
+const MEDIA_UA = "okhttp/4.12.0";
 
 const VIDLINK_API = "https://vidlink.pro/api/b";
 const ENC_API = "https://enc-dec.app/api/enc-vidlink";
@@ -150,7 +151,7 @@ function mapSubtitles(captions) {
       url: c.url,
       language: code,
       name: String(name),
-      headers: { "User-Agent": UA },
+      headers: { "User-Agent": MEDIA_UA },
     });
   }
   return out;
@@ -162,20 +163,24 @@ function playbackHeaders(qualityData, streamData) {
     (streamData && streamData.headers) || {},
     (qualityData && qualityData.headers) || {}
   );
-  const h = {};
+  // Default to native media client User-Agent. Nuvio TV's default OkHttpDataSource
+  // sets a browser Mozilla/5.0 UA, which triggers HTTP 428 Precondition Required
+  // on Tengine/Nginx CDNs (bcdn.hakunaymatata.com) due to missing browser bot cookies.
+  const h = {
+    "User-Agent": MEDIA_UA,
+  };
   for (const k of Object.keys(src)) {
     const val = src[k];
     if (val) {
       if (k.toLowerCase() === "referer") h["Referer"] = val;
       else if (k.toLowerCase() === "origin") h["Origin"] = val;
-      else if (k.toLowerCase() === "user-agent") h["User-Agent"] = val;
+      else if (k.toLowerCase() === "user-agent") {
+        h["User-Agent"] = val.includes("Mozilla") ? MEDIA_UA : val;
+      }
       else h[k] = val;
     }
   }
-  // Upstream CDN hosts (bcdn.hakunaymatata.com) reject arbitrary hotlinking.
-  // Passing artificial 'Referer: https://vidlink.pro/' causes HTTP 429 rate limit.
-  // When no headers are specified by upstream, return undefined so ExoPlayer connects natively.
-  return Object.keys(h).length > 0 ? h : undefined;
+  return h;
 }
 
 function resolveAgainst(url, base) {
