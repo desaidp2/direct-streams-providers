@@ -215,6 +215,12 @@ async function expandPlaylist(playlistUrl, headers, subtitles, title) {
         url: resolvedUrl,
         quality: q,
         headers: headers,
+        behaviorHints: {
+          notWebReady: true,
+          proxyHeaders: {
+            request: headers,
+          },
+        },
         subtitles: subtitles,
       });
     }
@@ -229,6 +235,12 @@ async function expandPlaylist(playlistUrl, headers, subtitles, title) {
         url: playlistUrl,
         quality: "Auto",
         headers: headers,
+        behaviorHints: {
+          notWebReady: true,
+          proxyHeaders: {
+            request: headers,
+          },
+        },
         subtitles: subtitles,
       },
     ];
@@ -295,6 +307,12 @@ async function getStreams(tmdbId, mediaType, season, episode) {
           url: qd.url,
           quality: q,
           headers: headers,
+          behaviorHints: {
+            notWebReady: true,
+            proxyHeaders: {
+              request: headers,
+            },
+          },
           subtitles: subtitles,
         });
       }

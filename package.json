@@ -1,6 +1,6 @@
 {
     "name": "nuvio-7movies",
-    "version": "1.0.2",
+    "version": "1.0.3",
     "description": "7Movies provider for Nuvio",
     "scripts": {
         "build": "node build.js",

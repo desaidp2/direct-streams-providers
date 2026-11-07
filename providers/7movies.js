@@ -1,6 +1,6 @@
 /**
  * 7movies - Built from src/7movies/
- * Generated: 2026-11-07T12:30:22.925Z
+ * Generated: 2026-11-07T12:34:51.482Z
  */
 var __async = (__this, __arguments, generator) => {
   return new Promise((resolve, reject) => {
@@ -214,6 +214,12 @@ function expandPlaylist(playlistUrl, headers, subtitles, title) {
           url: resolvedUrl,
           quality: q,
           headers,
+          behaviorHints: {
+            notWebReady: true,
+            proxyHeaders: {
+              request: headers
+            }
+          },
           subtitles
         });
       }
@@ -228,6 +234,12 @@ function expandPlaylist(playlistUrl, headers, subtitles, title) {
           url: playlistUrl,
           quality: "Auto",
           headers,
+          behaviorHints: {
+            notWebReady: true,
+            proxyHeaders: {
+              request: headers
+            }
+          },
           subtitles
         }
       ];
@@ -283,6 +295,12 @@ function getStreams(tmdbId, mediaType, season, episode) {
             url: qd.url,
             quality: q,
             headers,
+            behaviorHints: {
+              notWebReady: true,
+              proxyHeaders: {
+                request: headers
+              }
+            },
             subtitles
           });
         }
