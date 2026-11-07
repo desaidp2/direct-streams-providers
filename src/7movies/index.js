@@ -170,6 +170,13 @@ function playbackHeaders(qualityData) {
   return h;
 }
 
+function createMirrorUrl(url) {
+  if (typeof url === "string" && url.includes("://bcdn.hakunaymatata.com/")) {
+    return url.replace("://bcdn.hakunaymatata.com/", "://bcdnxw.hakunaymatata.com/");
+  }
+  return null;
+}
+
 function resolveAgainst(url, base) {
   if (!url || url.startsWith("http")) return url;
   try {
@@ -274,12 +281,27 @@ async function getStreams(tmdbId, mediaType, season, episode) {
         const qd = stream.qualities[key];
         if (!qd || !qd.url) continue;
         const q = qualityLabel(key);
+        const headers = playbackHeaders(qd);
+        const mirrorUrl = createMirrorUrl(qd.url);
+
+        // Add non-throttled alternate edge mirror (bcdnxw) first to avoid Nginx 429
+        if (mirrorUrl) {
+          streams.push({
+            name: "7Movies - " + q + " (Mirror)",
+            title: title + " - " + q + " (Mirror)",
+            url: mirrorUrl,
+            quality: q,
+            headers: headers,
+            subtitles: subtitles,
+          });
+        }
+
         streams.push({
           name: "7Movies - " + q,
           title: title + " - " + q + (qd.type ? " " + String(qd.type).toUpperCase() : ""),
           url: qd.url,
           quality: q,
-          headers: playbackHeaders(qd),
+          headers: headers,
           subtitles: subtitles,
         });
       }
