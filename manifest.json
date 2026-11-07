@@ -1,0 +1,19 @@
+{
+  "name": "7Movies",
+  "version": "1.0.0",
+  "scrapers": [
+    {
+      "id": "7movies",
+      "name": "7Movies",
+      "description": "7movies.ac sources (VidLink upstream) - direct MP4/HLS with subtitles",
+      "version": "1.0.0",
+      "author": "Anh Pham",
+      "supportedTypes": ["movie", "tv"],
+      "filename": "providers/7movies.js",
+      "enabled": true,
+      "formats": ["mp4", "m3u8"],
+      "logo": "https://www.google.com/s2/favicons?domain=7movies.ac&sz=128",
+      "contentLanguage": ["en"]
+    }
+  ]
+}
