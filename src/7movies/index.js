@@ -156,25 +156,26 @@ function mapSubtitles(captions) {
   return out;
 }
 
-function playbackHeaders(qualityData) {
-  const h = { "User-Agent": UA };
-  const src = (qualityData && qualityData.headers) || {};
-  const referer = src.referer || src.Referer;
-  const origin = src.origin || src.Origin;
-  if (referer) h.Referer = referer;
-  if (origin) h.Origin = origin;
-  if (!referer && !origin) {
-    h.Referer = VIDLINK_HEADERS.Referer;
-    h.Origin = VIDLINK_HEADERS.Origin;
+function playbackHeaders(qualityData, streamData) {
+  const src = Object.assign(
+    {},
+    (streamData && streamData.headers) || {},
+    (qualityData && qualityData.headers) || {}
+  );
+  const h = {};
+  for (const k of Object.keys(src)) {
+    const val = src[k];
+    if (val) {
+      if (k.toLowerCase() === "referer") h["Referer"] = val;
+      else if (k.toLowerCase() === "origin") h["Origin"] = val;
+      else if (k.toLowerCase() === "user-agent") h["User-Agent"] = val;
+      else h[k] = val;
+    }
   }
-  return h;
-}
-
-function createMirrorUrl(url) {
-  if (typeof url === "string" && url.includes("://bcdn.hakunaymatata.com/")) {
-    return url.replace("://bcdn.hakunaymatata.com/", "://bcdnxw.hakunaymatata.com/");
-  }
-  return null;
+  // Upstream CDN hosts (bcdn.hakunaymatata.com) reject arbitrary hotlinking.
+  // Passing artificial 'Referer: https://vidlink.pro/' causes HTTP 429 rate limit.
+  // When no headers are specified by upstream, return undefined so ExoPlayer connects natively.
+  return Object.keys(h).length > 0 ? h : undefined;
 }
 
 function resolveAgainst(url, base) {
@@ -281,20 +282,7 @@ async function getStreams(tmdbId, mediaType, season, episode) {
         const qd = stream.qualities[key];
         if (!qd || !qd.url) continue;
         const q = qualityLabel(key);
-        const headers = playbackHeaders(qd);
-        const mirrorUrl = createMirrorUrl(qd.url);
-
-        // Add non-throttled alternate edge mirror (bcdnxw) first to avoid Nginx 429
-        if (mirrorUrl) {
-          streams.push({
-            name: "7Movies - " + q + " (Mirror)",
-            title: title + " - " + q + " (Mirror)",
-            url: mirrorUrl,
-            quality: q,
-            headers: headers,
-            subtitles: subtitles,
-          });
-        }
+        const headers = playbackHeaders(qd, stream);
 
         streams.push({
           name: "7Movies - " + q,
@@ -309,9 +297,10 @@ async function getStreams(tmdbId, mediaType, season, episode) {
 
     // Step 4: Expand HLS master playlist if available
     if (stream.playlist) {
+      const plHeaders = playbackHeaders(null, stream);
       const expanded = await expandPlaylist(
         stream.playlist,
-        VIDLINK_HEADERS,
+        plHeaders || VIDLINK_HEADERS,
         subtitles,
         title
       );

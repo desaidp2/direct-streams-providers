@@ -1,6 +1,6 @@
 /**
  * 7movies - Built from src/7movies/
- * Generated: 2026-11-07T12:12:47.603Z
+ * Generated: 2026-11-07T12:22:38.332Z
  */
 var __async = (__this, __arguments, generator) => {
   return new Promise((resolve, reject) => {
@@ -162,26 +162,27 @@ function mapSubtitles(captions) {
   }
   return out;
 }
-function playbackHeaders(qualityData) {
-  const h = { "User-Agent": UA };
-  const src = qualityData && qualityData.headers || {};
-  const referer = src.referer || src.Referer;
-  const origin = src.origin || src.Origin;
-  if (referer)
-    h.Referer = referer;
-  if (origin)
-    h.Origin = origin;
-  if (!referer && !origin) {
-    h.Referer = VIDLINK_HEADERS.Referer;
-    h.Origin = VIDLINK_HEADERS.Origin;
+function playbackHeaders(qualityData, streamData) {
+  const src = Object.assign(
+    {},
+    streamData && streamData.headers || {},
+    qualityData && qualityData.headers || {}
+  );
+  const h = {};
+  for (const k of Object.keys(src)) {
+    const val = src[k];
+    if (val) {
+      if (k.toLowerCase() === "referer")
+        h["Referer"] = val;
+      else if (k.toLowerCase() === "origin")
+        h["Origin"] = val;
+      else if (k.toLowerCase() === "user-agent")
+        h["User-Agent"] = val;
+      else
+        h[k] = val;
+    }
   }
-  return h;
-}
-function createMirrorUrl(url) {
-  if (typeof url === "string" && url.includes("://bcdn.hakunaymatata.com/")) {
-    return url.replace("://bcdn.hakunaymatata.com/", "://bcdnxw.hakunaymatata.com/");
-  }
-  return null;
+  return Object.keys(h).length > 0 ? h : void 0;
 }
 function resolveAgainst(url, base) {
   if (!url || url.startsWith("http"))
@@ -272,18 +273,7 @@ function getStreams(tmdbId, mediaType, season, episode) {
           if (!qd || !qd.url)
             continue;
           const q = qualityLabel(key);
-          const headers = playbackHeaders(qd);
-          const mirrorUrl = createMirrorUrl(qd.url);
-          if (mirrorUrl) {
-            streams.push({
-              name: "7Movies - " + q + " (Mirror)",
-              title: title + " - " + q + " (Mirror)",
-              url: mirrorUrl,
-              quality: q,
-              headers,
-              subtitles
-            });
-          }
+          const headers = playbackHeaders(qd, stream);
           streams.push({
             name: "7Movies - " + q,
             title: title + " - " + q + (qd.type ? " " + String(qd.type).toUpperCase() : ""),
@@ -295,9 +285,10 @@ function getStreams(tmdbId, mediaType, season, episode) {
         }
       }
       if (stream.playlist) {
+        const plHeaders = playbackHeaders(null, stream);
         const expanded = yield expandPlaylist(
           stream.playlist,
-          VIDLINK_HEADERS,
+          plHeaders || VIDLINK_HEADERS,
           subtitles,
           title
         );
