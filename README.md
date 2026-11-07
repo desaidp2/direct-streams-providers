@@ -1,12 +1,23 @@
-# 7Movies for Nuvio
+# Direct Streams Providers
 
-[![Version](https://img.shields.io/badge/version-1.0.5-blue.svg)](manifest.json)
-[![Platform](https://img.shields.io/badge/platform-Nuvio%20(Android%20TV%20%7C%20Fire%20TV%20%7C%20Mobile)-green.svg)](https://nuvioapp.space)
+[![Version](https://img.shields.io/badge/version-1.0.6-blue.svg)](manifest.json)
+[![Platform](https://img.shields.io/badge/platform-Nuvio%20%7C%20WuPlay%20%7C%20Stremio-green.svg)](https://nuvioapp.space)
 [![Playback Verified](https://img.shields.io/badge/playback-verified%20live%20✅-brightgreen.svg)](docs/assets/movy_playback_osd.png)
 
-A high-performance, low-memory Nuvio plugin repository that adds **7movies.ac** and **movy.sx** as stream sources.
+A high-performance, low-memory direct video streaming suite that provides fast, account-free streams for **Nuvio**, **WuPlay**, and **Stremio**.
 
-Both providers are TMDB-keyed catalogs (`/movie/{tmdbId}`, `/tv/{tmdbId}`). Because Nuvio hands the scraper the clean TMDB ID, **zero search latency is required**. The providers resolve direct MP4 and HLS streams (up to 4K / 2160p) complete with localized subtitle tracks and ExoPlayer native header forwarding.
+Currently includes **7movies.ac** and **movy.sx** (with **flystream.net** coming soon). All scrapers resolve direct MP4 and HLS streams (up to 4K / 2160p) complete with localized subtitle tracks and ExoPlayer native header forwarding.
+
+---
+
+## 📱 Supported Platforms
+
+1. **Nuvio (Android TV, Fire TV, Mobile)**:
+   - Runs client-side scrapers in embedded QuickJS.
+   - Installable directly via manifest URL below.
+2. **WuPlay & Stremio (Android TV, Desktop, Web)**:
+   - Compatible with the Stremio Addon Protocol (`/manifest.json`, `/stream/{type}/{id}.json`).
+   - Self-hostable locally or deployable to Cloudflare Workers / Vercel.
 
 ---
 
@@ -23,19 +34,14 @@ Tested and verified live on **onn. 4K Plus Streaming (Android TV)** running Nuvi
 
 ## Providers
 
-- **7Movies** — resolves 7movies.ac's VidLink upstream: direct
-  MP4, 360p–1080p, with captions.
-- **Movy** — resolves movy.sx's stream API (api.wecollege.net).
-  The site encrypts its source lists with a custom seed scheme
-  ("mvm1"); the provider reimplements it and returns direct HLS,
-  480p–2160p (4K), with subtitle tracks from the site's subtitle
-  search. Two of its servers (Miami, Boise) answer from the TMDB
-  id alone; the rest are tried as fallbacks.
+- **7Movies** — resolves 7movies.ac's VidLink upstream: direct MP4, 360p–1080p, with captions.
+- **Movy** — resolves movy.sx's stream API (api.wecollege.net). Custom seed handshake ("mvm1") decrypted using 100% pure ECMAScript byte codecs (QuickJS/Hermes safe). Direct HLS up to 2160p (4K) with subtitle tracks.
+- **FlyStream** — *(Planned)* direct streaming provider.
 
 ## ✨ Features & Engineering Optimizations
 
 ### 1. ExoPlayer Native Header Forwarding (`behaviorHints`)
-- **Fixes HTTP 428 Precondition Required / Stream Blocked**: Media CDNs (`bcdn.hakunaymatata.com`) reject desktop browser `Mozilla/5.0` User-Agents on byte-range requests without browser bot challenge cookies.
+- **Fixes HTTP 428 Precondition Required / Stream Blocked**: Media CDNs (`bcdn.hakunaymatata.com`, `moon.goldenkite.top`) reject desktop browser `Mozilla/5.0` User-Agents on byte-range requests without browser bot challenge cookies.
 - **Decompiled DEX Architecture**: Reverse engineering of Nuvio TV's DEX (`com.nuvio.tv`) revealed that ExoPlayer's `OkHttpDataSource$Factory` extracts custom request headers from `StreamDto.behaviorHints.proxyHeaders.request` (via `ProxyHeadersDto(request=...)`), not bare top-level headers.
 - Streams and HLS variants are bundled with:
   ```json
@@ -44,8 +50,8 @@ Tested and verified live on **onn. 4K Plus Streaming (Android TV)** running Nuvi
     "proxyHeaders": {
       "request": {
         "User-Agent": "okhttp/4.12.0",
-        "Referer": "https://vidlink.pro/",
-        "Origin": "https://vidlink.pro"
+        "Referer": "https://www.movy.sx/",
+        "Origin": "https://www.movy.sx"
       }
     }
   }
@@ -64,13 +70,13 @@ Tested and verified live on **onn. 4K Plus Streaming (Android TV)** running Nuvi
 
 ---
 
-## 🚀 Installation
+## 🚀 Installation on Nuvio
 
 > **Note:** Plugins require the **sideloaded** Nuvio build (Google Play Store builds have plugins disabled by policy).
 
 ### Repository Manifest URL:
 ```text
-https://raw.githubusercontent.com/phuanh004/nuvio-7movies/refs/heads/main/manifest.json
+https://raw.githubusercontent.com/phuanh004/direct-streams-providers/refs/heads/main/manifest.json
 ```
 
 ### Method 1: Remote Install via Web Dashboard (Recommended)
@@ -96,13 +102,13 @@ https://raw.githubusercontent.com/phuanh004/nuvio-7movies/refs/heads/main/manife
 ### Build & Run Tests
 ```bash
 # Clone the repository
-git clone https://github.com/phuanh004/nuvio-7movies.git
-cd nuvio-7movies
+git clone https://github.com/phuanh004/direct-streams-providers.git
+cd direct-streams-providers
 
 # Install dependencies (esbuild)
 npm install
 
-# Bundle src/7movies/index.js -> providers/7movies.js
+# Bundle scrapers
 npm run build
 
 # Run end-to-end integration tests

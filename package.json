@@ -1,7 +1,7 @@
 {
-    "name": "nuvio-7movies",
-    "version": "1.0.5",
-    "description": "7Movies & Movy providers for Nuvio",
+    "name": "direct-streams-providers",
+    "version": "1.0.6",
+    "description": "Direct fast stream providers (7Movies, Movy) for Nuvio, WuPlay, and Stremio",
     "scripts": {
         "build": "node build.js",
         "test": "node test-7movies.js && node test-movy.js"

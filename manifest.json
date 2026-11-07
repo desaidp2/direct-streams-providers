@@ -1,6 +1,6 @@
 {
-  "name": "7Movies & Movy",
-  "version": "1.0.5",
+  "name": "Direct Streams Providers",
+  "version": "1.0.6",
   "scrapers": [
     {
       "id": "7movies",
