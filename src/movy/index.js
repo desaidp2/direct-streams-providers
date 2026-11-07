@@ -3,7 +3,7 @@
  *
  * movy.sx is a TMDB-keyed front end (/movie/{tmdbId}, /tv/{tmdbId})
  * over the wecollege stream API (api.wecollege.net). Its server
- * list (Miami, Boise, Seattle, ...) is a set of endpoints
+ * list (Miami, Boise, Atlanta, ...) is a set of endpoints
  *   GET /{server}/sources?{title,mediaType,year,seasonId,episodeId,
  *                          tmdbId,imdbId, enc:"2", seed}
  * whose responses are encrypted with a custom scheme:
@@ -12,11 +12,13 @@
  *      "mvm1" || JSON, XORed with a keystream derived from the
  *      seed + mediaId by a small custom PRNG (SHA-256 K-table
  *      constants, murmur-style finalizer, FNV-1a seed hash).
- * This provider reimplements that scheme (recovered from the
- * site's own JS bundle) and returns the direct HLS sources,
- * which run up to 2160p/4K — above the 7Movies provider's 1080p
- * MP4 ceiling. Subtitles come from the sources payloads plus the
- * subtitles.vidy.st search the site itself uses.
+ *
+ * Performance on QuickJS (Android TV):
+ *   - Fast parallel quorum: Miami & Boise are queried concurrently
+ *     as soon as seed is ready (< 1s resolution).
+ *   - Tight per-request timeouts (3500ms) prevent hanging on dead upstreams.
+ *   - behaviorHints.proxyHeaders.request passes Referer + Origin headers
+ *     to prevent HTTP 403 Forbidden from media CDNs.
  */
 
 const BROWSER_UA =
@@ -33,24 +35,11 @@ const API_HEADERS = {
   Referer: SITE + "/",
 };
 
-// Servers tried in order. Miami/Boise answer from the TMDB id
-// alone; the rest search by title and need the detail-page params.
-const SERVERS = [
-  "miami",
-  "boise",
-  "seattle",
-  "atlanta",
-  "phoenix",
-  "portland",
-  "chicago",
-  "nashville",
-  "vegas",
-  "reno",
-  "oakland",
-  "dallas",
-  "paris",
-  "cancun",
-];
+// Fast servers: Miami & Boise answer directly from tmdbId without title search.
+// Atlanta, Phoenix, Dallas serve as secondary fallback.
+// Omitted: Seattle (Cloudflare challenge), Vegas (11s+ hang), Portland/Chicago/Reno/Oakland (persistent 500s).
+const PRIMARY_SERVERS = ["miami", "boise"];
+const SECONDARY_SERVERS = ["atlanta", "phoenix", "dallas"];
 
 const QUALITY_ORDER = {
   "4K": 6,
@@ -63,13 +52,8 @@ const QUALITY_ORDER = {
   Unknown: -1,
 };
 
-/* ---------- mvm1 decryption (ported from the site's bundle) ---------- */
+/* ---------- mvm1 decryption ---------- */
 
-const K = [
-  0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1,
-  0x923f82a4, 0xab1c5ed5, 0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3,
-  0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
-];
 const MAGIC = [109, 118, 109, 49]; // "mvm1"
 
 function fin(e) {
@@ -162,16 +146,33 @@ function decryptSources(payloadText, seed, mediaId) {
   return Buffer.from(body).toString("utf8");
 }
 
-/* ---------- API plumbing ---------- */
+/* ---------- Network helpers ---------- */
 
-const seedCache = new Map(); // mediaId -> {seed, expiresAt}
+function timeout(promise, ms = 3500) {
+  if (typeof setTimeout !== "function") return promise;
+  let timer;
+  const timeoutPromise = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error("Timeout " + ms + "ms")), ms);
+  });
+  return Promise.race([
+    promise.finally(() => {
+      if (typeof clearTimeout === "function") clearTimeout(timer);
+    }),
+    timeoutPromise,
+  ]);
+}
+
+const seedCache = new Map();
 
 async function getSeed(mediaId) {
   const hit = seedCache.get(mediaId);
   if (hit && hit.expiresAt - 5000 > Date.now()) return hit.seed;
-  const res = await fetch(API + "/seed?mediaId=" + mediaId, {
-    headers: API_HEADERS,
-  });
+  const res = await timeout(
+    fetch(API + "/seed?mediaId=" + mediaId, {
+      headers: API_HEADERS,
+    }),
+    3500
+  );
   if (!res.ok) throw new Error("seed HTTP " + res.status);
   const data = await res.json();
   seedCache.set(mediaId, {
@@ -191,9 +192,12 @@ async function fetchServerSources(server, params, mediaId) {
     }
     qs.set("enc", "2");
     qs.set("seed", seed);
-    const res = await fetch(API + "/" + server + "/sources?" + qs.toString(), {
-      headers: API_HEADERS,
-    });
+    const res = await timeout(
+      fetch(API + "/" + server + "/sources?" + qs.toString(), {
+        headers: API_HEADERS,
+      }),
+      3500
+    );
     if (!res.ok) throw new Error("sources HTTP " + res.status);
     const text = await res.text();
     return JSON.parse(decryptSources(text, seed, mediaId));
@@ -201,7 +205,6 @@ async function fetchServerSources(server, params, mediaId) {
   try {
     return await attempt();
   } catch (e) {
-    // The app drops the cached seed and retries once on a 401.
     if (String(e.message || "").includes("401")) {
       seedCache.delete(mediaId);
       return await attempt();
@@ -210,19 +213,19 @@ async function fetchServerSources(server, params, mediaId) {
   }
 }
 
-// Title/year/imdb come from the site's own detail page (SSR JSON),
-// exactly the params the web app passes to the sources API.
 async function fetchDetailParams(tmdbId, mediaType) {
   try {
-    const res = await fetch(SITE + "/" + mediaType + "/" + tmdbId, {
-      headers: { "User-Agent": BROWSER_UA },
-    });
+    const res = await timeout(
+      fetch(SITE + "/" + mediaType + "/" + tmdbId, {
+        headers: { "User-Agent": BROWSER_UA },
+      }),
+      3000
+    );
     if (!res.ok) return {};
     const html = await res.text();
     const m = html.match(/__NEXT_DATA__[^>]*>(.*?)<\/script>/s);
     if (!m) return {};
-    const details =
-      JSON.parse(m[1]).props.pageProps.details || {};
+    const details = JSON.parse(m[1]).props.pageProps.details || {};
     return {
       title: details.title ? encodeURIComponent(details.title) : undefined,
       year: details.year,
@@ -241,7 +244,10 @@ async function fetchSubtitles(tmdbId, mediaType, season, episode) {
     let url = SUBS_API + "?id=" + tmdbId;
     if (mediaType === "tv")
       url += "&season=" + (season || 1) + "&episode=" + (episode || 1);
-    const res = await fetch(url, { headers: { "User-Agent": BROWSER_UA } });
+    const res = await timeout(
+      fetch(url, { headers: { "User-Agent": BROWSER_UA } }),
+      3000
+    );
     if (!res.ok) return [];
     const list = await res.json();
     if (!Array.isArray(list)) return [];
@@ -256,21 +262,16 @@ async function fetchSubtitles(tmdbId, mediaType, season, episode) {
         url: item.url,
         language: lang,
         name: item.display || lang,
-        headers: { "User-Agent": BROWSER_UA },
+        headers: { "User-Agent": MEDIA_UA },
       });
       if (out.length >= 20) break;
     }
-    // English first, the rest as returned.
-    out.sort((a, b) =>
-      a.language === "en" ? -1 : b.language === "en" ? 1 : 0
-    );
+    out.sort((a, b) => (a.language === "en" ? -1 : b.language === "en" ? 1 : 0));
     return out;
   } catch (e) {
     return [];
   }
 }
-
-/* ---------- stream shaping ---------- */
 
 function qualityLabel(raw) {
   const s = String(raw || "");
@@ -295,50 +296,64 @@ function serverTitle(server) {
 
 async function getStreams(tmdbId, mediaType, season, episode) {
   try {
+    if (!tmdbId) return [];
+    const cleanId = String(tmdbId).trim();
+    if (!cleanId) return [];
+
     const type = mediaType === "tv" ? "tv" : "movie";
-    const detail = await fetchDetailParams(tmdbId, type);
-    const detailOk = Boolean(detail.title);
-    const params = {
-      title: detail.title,
+    const s = type === "tv" ? Math.max(1, parseInt(season, 10) || 1) : null;
+    const ep = type === "tv" ? Math.max(1, parseInt(episode, 10) || 1) : null;
+
+    // 1. Kick off seed, subtitle search, and detail page in parallel
+    const seedPromise = getSeed(cleanId);
+    const subsPromise = fetchSubtitles(cleanId, type, s, ep);
+    const detailPromise = fetchDetailParams(cleanId, type);
+
+    // 2. Query primary servers (Miami & Boise) as soon as seed is ready
+    let seed;
+    try {
+      seed = await timeout(seedPromise, 3500);
+    } catch (e) {
+      return [];
+    }
+    if (!seed) return [];
+
+    const baseParams = {
       mediaType: type,
-      year: detail.year,
-      totalSeasons: detail.totalSeasons,
-      seasonId: type === "tv" ? season || 1 : undefined,
-      episodeId: type === "tv" ? episode || 1 : undefined,
-      tmdbId: Number(tmdbId),
-      imdbId: detail.imdbId,
+      tmdbId: Number(cleanId),
+      seasonId: type === "tv" ? s : undefined,
+      episodeId: type === "tv" ? ep : undefined,
     };
 
-    const subsPromise = fetchSubtitles(tmdbId, type, season, episode);
+    const primaryResults = await Promise.allSettled(
+      PRIMARY_SERVERS.map((srv) => fetchServerSources(srv, baseParams, cleanId))
+    );
 
     const streams = [];
     const seenUrls = new Set();
     let payloadSubs = [];
 
-    for (const server of SERVERS) {
-      let data;
-      try {
-        data = await fetchServerSources(server, params, tmdbId);
-      } catch (e) {
-        continue;
-      }
-      if (!data) continue;
+    const streamHeaders = {
+      "User-Agent": MEDIA_UA,
+      Referer: SITE + "/",
+      Origin: SITE,
+    };
+
+    function collectSources(data, server) {
+      if (!data) return;
       if (Array.isArray(data.subtitles) && data.subtitles.length && !payloadSubs.length) {
         payloadSubs = data.subtitles
-          .filter((s) => s && (s.url || s.file))
-          .map((s) => ({
-            url: s.url || s.file,
-            language: s.language || s.lang || "und",
-            name: s.display || s.label || s.language || "Subtitle",
-            headers: { "User-Agent": BROWSER_UA },
+          .filter((sub) => sub && (sub.url || sub.file))
+          .map((sub) => ({
+            url: sub.url || sub.file,
+            language: sub.language || sub.lang || "und",
+            name: sub.display || sub.label || sub.language || "Subtitle",
+            headers: streamHeaders,
           }));
       }
       const sources = Array.isArray(data.sources) ? data.sources : [];
       for (const src of sources) {
         if (!src || !src.url || seenUrls.has(src.url)) continue;
-        // Some servers label the quality slot with a language name
-        // ("English", "Hindi"); those entries are dubs — keep them
-        // but label honestly instead of faking a resolution.
         const isLangLabel = !/\d/.test(String(src.quality || ""));
         const q = isLangLabel ? "Unknown" : qualityLabel(src.quality);
         seenUrls.add(src.url);
@@ -346,10 +361,7 @@ async function getStreams(tmdbId, mediaType, season, episode) {
           name: "Movy " + serverTitle(server) + " - " + q,
           title:
             (type === "tv"
-              ? "S" +
-                String(season || 1).padStart(2, "0") +
-                "E" +
-                String(episode || 1).padStart(2, "0")
+              ? "S" + String(s).padStart(2, "0") + "E" + String(ep).padStart(2, "0")
               : "Movie") +
             " - " +
             q +
@@ -357,29 +369,52 @@ async function getStreams(tmdbId, mediaType, season, episode) {
             " HLS",
           url: src.url,
           quality: q,
-          headers: { "User-Agent": MEDIA_UA },
+          headers: streamHeaders,
           behaviorHints: {
-            notWebReady: false,
+            notWebReady: true,
             proxyHeaders: {
-              request: { "User-Agent": MEDIA_UA },
+              request: streamHeaders,
             },
           },
           subtitles: [],
         });
       }
-      // Two productive servers is plenty of choice; stop early.
-      if (streams.length >= 8) break;
-      // Miami/Boise answer from the TMDB id alone. If both are dry
-      // and the detail page didn't resolve either, the title almost
-      // certainly doesn't exist — don't sweep the title-search
-      // servers for the full timeout.
-      if (!detailOk && !streams.length && server === "boise") break;
+    }
+
+    for (let i = 0; i < PRIMARY_SERVERS.length; i++) {
+      const res = primaryResults[i];
+      if (res.status === "fulfilled" && res.value) {
+        collectSources(res.value, PRIMARY_SERVERS[i]);
+      }
+    }
+
+    // 3. Fallback to secondary servers if primary returned nothing
+    if (!streams.length) {
+      const detail = (await timeout(detailPromise, 2500).catch(() => ({}))) || {};
+      const detailParams = Object.assign({}, baseParams, {
+        title: detail.title,
+        year: detail.year,
+        imdbId: detail.imdbId,
+        totalSeasons: detail.totalSeasons,
+      });
+
+      const secondaryResults = await Promise.allSettled(
+        SECONDARY_SERVERS.map((srv) => fetchServerSources(srv, detailParams, cleanId))
+      );
+      for (let i = 0; i < SECONDARY_SERVERS.length; i++) {
+        const res = secondaryResults[i];
+        if (res.status === "fulfilled" && res.value) {
+          collectSources(res.value, SECONDARY_SERVERS[i]);
+        }
+      }
     }
 
     if (!streams.length) return [];
 
-    const subs = payloadSubs.length ? payloadSubs : await subsPromise;
-    for (const s of streams) s.subtitles = subs;
+    const subs = payloadSubs.length
+      ? payloadSubs
+      : await timeout(subsPromise, 2000).catch(() => []);
+    for (const st of streams) st.subtitles = subs || [];
 
     streams.sort(
       (a, b) => (QUALITY_ORDER[b.quality] || -2) - (QUALITY_ORDER[a.quality] || -2)

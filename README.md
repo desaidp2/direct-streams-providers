@@ -1,6 +1,6 @@
 # 7Movies for Nuvio
 
-[![Version](https://img.shields.io/badge/version-1.0.3-blue.svg)](manifest.json)
+[![Version](https://img.shields.io/badge/version-1.0.4-blue.svg)](manifest.json)
 [![Platform](https://img.shields.io/badge/platform-Nuvio%20(Android%20TV%20%7C%20Fire%20TV%20%7C%20Mobile)-green.svg)](https://nuvioapp.space)
 [![Playback Verified](https://img.shields.io/badge/playback-verified%20live%20✅-brightgreen.svg)](docs/assets/live_playback_osd.png)
 

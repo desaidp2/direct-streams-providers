@@ -1,10 +1,10 @@
 {
     "name": "nuvio-7movies",
-    "version": "1.0.3",
-    "description": "7Movies provider for Nuvio",
+    "version": "1.0.4",
+    "description": "7Movies & Movy providers for Nuvio",
     "scripts": {
         "build": "node build.js",
-        "test": "node test-7movies.js"
+        "test": "node test-7movies.js && node test-movy.js"
     },
     "devDependencies": {
         "esbuild": "^0.20.0"

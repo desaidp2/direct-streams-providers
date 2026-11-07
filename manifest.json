@@ -1,6 +1,6 @@
 {
-  "name": "7Movies",
-  "version": "1.0.3",
+  "name": "7Movies & Movy",
+  "version": "1.0.4",
   "scrapers": [
     {
       "id": "7movies",
@@ -27,7 +27,7 @@
       "id": "movy",
       "name": "Movy",
       "description": "movy.sx sources (wecollege API, mvm1-decrypted) - direct HLS up to 4K with subtitles",
-      "version": "1.0.0",
+      "version": "1.0.1",
       "author": "Anh Pham",
       "supportedTypes": [
         "movie",

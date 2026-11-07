@@ -1,6 +1,6 @@
 /**
  * movy - Built from src/movy/
- * Generated: 2026-11-07T22:03:04.997Z
+ * Generated: 2026-11-07T22:39:52.650Z
  */
 var __async = (__this, __arguments, generator) => {
   return new Promise((resolve, reject) => {
@@ -34,22 +34,8 @@ var API_HEADERS = {
   Origin: SITE,
   Referer: SITE + "/"
 };
-var SERVERS = [
-  "miami",
-  "boise",
-  "seattle",
-  "atlanta",
-  "phoenix",
-  "portland",
-  "chicago",
-  "nashville",
-  "vegas",
-  "reno",
-  "oakland",
-  "dallas",
-  "paris",
-  "cancun"
-];
+var PRIMARY_SERVERS = ["miami", "boise"];
+var SECONDARY_SERVERS = ["atlanta", "phoenix", "dallas"];
 var QUALITY_ORDER = {
   "4K": 6,
   "1440p": 5,
@@ -148,15 +134,33 @@ function decryptSources(payloadText, seed, mediaId) {
     return new TextDecoder("utf-8").decode(body);
   return Buffer.from(body).toString("utf8");
 }
+function timeout(promise, ms = 3500) {
+  if (typeof setTimeout !== "function")
+    return promise;
+  let timer;
+  const timeoutPromise = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error("Timeout " + ms + "ms")), ms);
+  });
+  return Promise.race([
+    promise.finally(() => {
+      if (typeof clearTimeout === "function")
+        clearTimeout(timer);
+    }),
+    timeoutPromise
+  ]);
+}
 var seedCache = /* @__PURE__ */ new Map();
 function getSeed(mediaId) {
   return __async(this, null, function* () {
     const hit = seedCache.get(mediaId);
     if (hit && hit.expiresAt - 5e3 > Date.now())
       return hit.seed;
-    const res = yield fetch(API + "/seed?mediaId=" + mediaId, {
-      headers: API_HEADERS
-    });
+    const res = yield timeout(
+      fetch(API + "/seed?mediaId=" + mediaId, {
+        headers: API_HEADERS
+      }),
+      3500
+    );
     if (!res.ok)
       throw new Error("seed HTTP " + res.status);
     const data = yield res.json();
@@ -179,9 +183,12 @@ function fetchServerSources(server, params, mediaId) {
       }
       qs.set("enc", "2");
       qs.set("seed", seed);
-      const res = yield fetch(API + "/" + server + "/sources?" + qs.toString(), {
-        headers: API_HEADERS
-      });
+      const res = yield timeout(
+        fetch(API + "/" + server + "/sources?" + qs.toString(), {
+          headers: API_HEADERS
+        }),
+        3500
+      );
       if (!res.ok)
         throw new Error("sources HTTP " + res.status);
       const text = yield res.text();
@@ -201,9 +208,12 @@ function fetchServerSources(server, params, mediaId) {
 function fetchDetailParams(tmdbId, mediaType) {
   return __async(this, null, function* () {
     try {
-      const res = yield fetch(SITE + "/" + mediaType + "/" + tmdbId, {
-        headers: { "User-Agent": BROWSER_UA }
-      });
+      const res = yield timeout(
+        fetch(SITE + "/" + mediaType + "/" + tmdbId, {
+          headers: { "User-Agent": BROWSER_UA }
+        }),
+        3e3
+      );
       if (!res.ok)
         return {};
       const html = yield res.text();
@@ -228,7 +238,10 @@ function fetchSubtitles(tmdbId, mediaType, season, episode) {
       let url = SUBS_API + "?id=" + tmdbId;
       if (mediaType === "tv")
         url += "&season=" + (season || 1) + "&episode=" + (episode || 1);
-      const res = yield fetch(url, { headers: { "User-Agent": BROWSER_UA } });
+      const res = yield timeout(
+        fetch(url, { headers: { "User-Agent": BROWSER_UA } }),
+        3e3
+      );
       if (!res.ok)
         return [];
       const list = yield res.json();
@@ -247,14 +260,12 @@ function fetchSubtitles(tmdbId, mediaType, season, episode) {
           url: item.url,
           language: lang,
           name: item.display || lang,
-          headers: { "User-Agent": BROWSER_UA }
+          headers: { "User-Agent": MEDIA_UA }
         });
         if (out.length >= 20)
           break;
       }
-      out.sort(
-        (a, b) => a.language === "en" ? -1 : b.language === "en" ? 1 : 0
-      );
+      out.sort((a, b) => a.language === "en" ? -1 : b.language === "en" ? 1 : 0);
       return out;
     } catch (e) {
       return [];
@@ -290,38 +301,15 @@ function serverTitle(server) {
 function getStreams(tmdbId, mediaType, season, episode) {
   return __async(this, null, function* () {
     try {
-      const type = mediaType === "tv" ? "tv" : "movie";
-      const detail = yield fetchDetailParams(tmdbId, type);
-      const detailOk = Boolean(detail.title);
-      const params = {
-        title: detail.title,
-        mediaType: type,
-        year: detail.year,
-        totalSeasons: detail.totalSeasons,
-        seasonId: type === "tv" ? season || 1 : void 0,
-        episodeId: type === "tv" ? episode || 1 : void 0,
-        tmdbId: Number(tmdbId),
-        imdbId: detail.imdbId
-      };
-      const subsPromise = fetchSubtitles(tmdbId, type, season, episode);
-      const streams = [];
-      const seenUrls = /* @__PURE__ */ new Set();
-      let payloadSubs = [];
-      for (const server of SERVERS) {
-        let data;
-        try {
-          data = yield fetchServerSources(server, params, tmdbId);
-        } catch (e) {
-          continue;
-        }
+      let collectSources2 = function(data, server) {
         if (!data)
-          continue;
+          return;
         if (Array.isArray(data.subtitles) && data.subtitles.length && !payloadSubs.length) {
-          payloadSubs = data.subtitles.filter((s) => s && (s.url || s.file)).map((s) => ({
-            url: s.url || s.file,
-            language: s.language || s.lang || "und",
-            name: s.display || s.label || s.language || "Subtitle",
-            headers: { "User-Agent": BROWSER_UA }
+          payloadSubs = data.subtitles.filter((sub) => sub && (sub.url || sub.file)).map((sub) => ({
+            url: sub.url || sub.file,
+            language: sub.language || sub.lang || "und",
+            name: sub.display || sub.label || sub.language || "Subtitle",
+            headers: streamHeaders
           }));
         }
         const sources = Array.isArray(data.sources) ? data.sources : [];
@@ -333,29 +321,86 @@ function getStreams(tmdbId, mediaType, season, episode) {
           seenUrls.add(src.url);
           streams.push({
             name: "Movy " + serverTitle(server) + " - " + q,
-            title: (type === "tv" ? "S" + String(season || 1).padStart(2, "0") + "E" + String(episode || 1).padStart(2, "0") : "Movie") + " - " + q + (isLangLabel ? " (" + String(src.quality) + ")" : "") + " HLS",
+            title: (type === "tv" ? "S" + String(s).padStart(2, "0") + "E" + String(ep).padStart(2, "0") : "Movie") + " - " + q + (isLangLabel ? " (" + String(src.quality) + ")" : "") + " HLS",
             url: src.url,
             quality: q,
-            headers: { "User-Agent": MEDIA_UA },
+            headers: streamHeaders,
             behaviorHints: {
-              notWebReady: false,
+              notWebReady: true,
               proxyHeaders: {
-                request: { "User-Agent": MEDIA_UA }
+                request: streamHeaders
               }
             },
             subtitles: []
           });
         }
-        if (streams.length >= 8)
-          break;
-        if (!detailOk && !streams.length && server === "boise")
-          break;
+      };
+      var collectSources = collectSources2;
+      if (!tmdbId)
+        return [];
+      const cleanId = String(tmdbId).trim();
+      if (!cleanId)
+        return [];
+      const type = mediaType === "tv" ? "tv" : "movie";
+      const s = type === "tv" ? Math.max(1, parseInt(season, 10) || 1) : null;
+      const ep = type === "tv" ? Math.max(1, parseInt(episode, 10) || 1) : null;
+      const seedPromise = getSeed(cleanId);
+      const subsPromise = fetchSubtitles(cleanId, type, s, ep);
+      const detailPromise = fetchDetailParams(cleanId, type);
+      let seed;
+      try {
+        seed = yield timeout(seedPromise, 3500);
+      } catch (e) {
+        return [];
+      }
+      if (!seed)
+        return [];
+      const baseParams = {
+        mediaType: type,
+        tmdbId: Number(cleanId),
+        seasonId: type === "tv" ? s : void 0,
+        episodeId: type === "tv" ? ep : void 0
+      };
+      const primaryResults = yield Promise.allSettled(
+        PRIMARY_SERVERS.map((srv) => fetchServerSources(srv, baseParams, cleanId))
+      );
+      const streams = [];
+      const seenUrls = /* @__PURE__ */ new Set();
+      let payloadSubs = [];
+      const streamHeaders = {
+        "User-Agent": MEDIA_UA,
+        Referer: SITE + "/",
+        Origin: SITE
+      };
+      for (let i = 0; i < PRIMARY_SERVERS.length; i++) {
+        const res = primaryResults[i];
+        if (res.status === "fulfilled" && res.value) {
+          collectSources2(res.value, PRIMARY_SERVERS[i]);
+        }
+      }
+      if (!streams.length) {
+        const detail = (yield timeout(detailPromise, 2500).catch(() => ({}))) || {};
+        const detailParams = Object.assign({}, baseParams, {
+          title: detail.title,
+          year: detail.year,
+          imdbId: detail.imdbId,
+          totalSeasons: detail.totalSeasons
+        });
+        const secondaryResults = yield Promise.allSettled(
+          SECONDARY_SERVERS.map((srv) => fetchServerSources(srv, detailParams, cleanId))
+        );
+        for (let i = 0; i < SECONDARY_SERVERS.length; i++) {
+          const res = secondaryResults[i];
+          if (res.status === "fulfilled" && res.value) {
+            collectSources2(res.value, SECONDARY_SERVERS[i]);
+          }
+        }
       }
       if (!streams.length)
         return [];
-      const subs = payloadSubs.length ? payloadSubs : yield subsPromise;
-      for (const s of streams)
-        s.subtitles = subs;
+      const subs = payloadSubs.length ? payloadSubs : yield timeout(subsPromise, 2e3).catch(() => []);
+      for (const st of streams)
+        st.subtitles = subs || [];
       streams.sort(
         (a, b) => (QUALITY_ORDER[b.quality] || -2) - (QUALITY_ORDER[a.quality] || -2)
       );
