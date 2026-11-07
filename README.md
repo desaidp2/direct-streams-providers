@@ -100,20 +100,20 @@ WuPlay and Stremio communicate via the **Stremio Add-on Protocol**. You can run 
 
 ### Run Locally (Zero Dependencies)
 ```bash
-# Start the add-on server on port 7000
+# Start the add-on server on port 7070
 npm run serve
 ```
 
 Install on your device:
 - **WuPlay (Android TV)**: Open WuPlay → Go to **Add-ons** (or use WuPlay Web Configurator) → Add URL:
   ```text
-  http://<your-ip>:7000/manifest.json
+  http://<your-ip>:7070/manifest.json
   ```
 - **Stremio**: In the Stremio search bar, paste:
   ```text
-  http://<your-ip>:7000/manifest.json
+  http://<your-ip>:7070/manifest.json
   ```
-  Or click `stremio://<your-ip>:7000/manifest.json`.
+  Or click `stremio://<your-ip>:7070/manifest.json`.
 
 ---
 

@@ -15,7 +15,7 @@ const http = require("http");
 const url = require("url");
 const { route, CORS_HEADERS } = require("./src/stremio/router");
 
-const PORT = parseInt(process.env.PORT || "7000", 10);
+const PORT = parseInt(process.env.PORT || "7070", 10);
 const HOST = process.env.HOST || "0.0.0.0";
 
 const server = http.createServer(async (req, res) => {
