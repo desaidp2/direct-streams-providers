@@ -8,12 +8,40 @@
       "description": "7movies.ac sources (VidLink upstream) - direct MP4/HLS with subtitles",
       "version": "1.0.3",
       "author": "Anh Pham",
-      "supportedTypes": ["movie", "tv"],
+      "supportedTypes": [
+        "movie",
+        "tv"
+      ],
       "filename": "providers/7movies.js",
       "enabled": true,
-      "formats": ["mp4", "m3u8"],
+      "formats": [
+        "mp4",
+        "m3u8"
+      ],
       "logo": "https://www.google.com/s2/favicons?domain=7movies.ac&sz=128",
-      "contentLanguage": ["en"]
+      "contentLanguage": [
+        "en"
+      ]
+    },
+    {
+      "id": "movy",
+      "name": "Movy",
+      "description": "movy.sx sources (wecollege API, mvm1-decrypted) - direct HLS up to 4K with subtitles",
+      "version": "1.0.0",
+      "author": "Anh Pham",
+      "supportedTypes": [
+        "movie",
+        "tv"
+      ],
+      "filename": "providers/movy.js",
+      "enabled": true,
+      "formats": [
+        "m3u8"
+      ],
+      "logo": "https://www.google.com/s2/favicons?domain=movy.sx&sz=128",
+      "contentLanguage": [
+        "en"
+      ]
     }
   ]
 }

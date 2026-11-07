@@ -4,7 +4,7 @@
 [![Platform](https://img.shields.io/badge/platform-Nuvio%20(Android%20TV%20%7C%20Fire%20TV%20%7C%20Mobile)-green.svg)](https://nuvioapp.space)
 [![Playback Verified](https://img.shields.io/badge/playback-verified%20live%20✅-brightgreen.svg)](docs/assets/live_playback_osd.png)
 
-A high-performance, low-memory Nuvio plugin provider that adds **7movies.ac** as a stream source.
+A high-performance, low-memory Nuvio plugin repository that adds **7movies.ac** and **movy.sx** as stream sources.
 
 7Movies is a TMDB-keyed catalog (`/movie/{tmdbId}/watch`, `/tv/{tmdbId}/watch`). Because Nuvio hands the scraper the clean TMDB ID, **zero search latency is required**. The provider resolves direct MP4 and HLS streams (up to 1080p) complete with localized subtitle tracks and ExoPlayer native header forwarding.
 
@@ -20,6 +20,17 @@ Tested and verified live on **onn. 4K Plus Streaming (Android TV)** running Nuvi
 | *Stream selection sheet with 1080p, 480p, 360p MP4s* | *Live playback with subtitles, hardware decoding, and zero buffer stalls* |
 
 ---
+
+## Providers
+
+- **7Movies** — resolves 7movies.ac's VidLink upstream: direct
+  MP4, 360p–1080p, with captions.
+- **Movy** — resolves movy.sx's stream API (api.wecollege.net).
+  The site encrypts its source lists with a custom seed scheme
+  ("mvm1"); the provider reimplements it and returns direct HLS,
+  480p–2160p (4K), with subtitle tracks from the site's subtitle
+  search. Two of its servers (Miami, Boise) answer from the TMDB
+  id alone; the rest are tried as fallbacks.
 
 ## ✨ Features & Engineering Optimizations
 
