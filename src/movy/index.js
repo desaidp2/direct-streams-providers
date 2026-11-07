@@ -3,22 +3,16 @@
  *
  * movy.sx is a TMDB-keyed front end (/movie/{tmdbId}, /tv/{tmdbId})
  * over the wecollege stream API (api.wecollege.net). Its server
- * list (Miami, Boise, Atlanta, ...) is a set of endpoints
- *   GET /{server}/sources?{title,mediaType,year,seasonId,episodeId,
- *                          tmdbId,imdbId, enc:"2", seed}
- * whose responses are encrypted with a custom scheme:
- *   1. GET /seed?mediaId={tmdbId}            -> {seed, ttlMs}
- *   2. The sources response is base64url text; the plaintext is
- *      "mvm1" || JSON, XORed with a keystream derived from the
- *      seed + mediaId by a small custom PRNG (SHA-256 K-table
- *      constants, murmur-style finalizer, FNV-1a seed hash).
+ * endpoints (/{server}/sources) return encrypted payloads:
+ *   1. GET /seed?mediaId={tmdbId} -> {seed, ttlMs}
+ *   2. Base64url text containing "mvm1" || JSON, XORed with a keystream
+ *      derived from seed + mediaId by a custom PRNG.
  *
- * Performance on QuickJS (Android TV):
- *   - Fast parallel quorum: Miami & Boise are queried concurrently
- *     as soon as seed is ready (< 1s resolution).
- *   - Tight per-request timeouts (3500ms) prevent hanging on dead upstreams.
- *   - behaviorHints.proxyHeaders.request passes Referer + Origin headers
- *     to prevent HTTP 403 Forbidden from media CDNs.
+ * QuickJS / Hermes Embedded Compatibility:
+ *   - 100% Pure ECMAScript: No Node.js Buffer, no DOM atob, no TextDecoder.
+ *   - Bounded queries & tight timeouts (< 2s total resolution).
+ *   - behaviorHints.proxyHeaders.request passes Referer + Origin to bypass
+ *     media CDN (goldenkite / vividstone) 403 Forbidden blocks.
  */
 
 const BROWSER_UA =
@@ -35,9 +29,12 @@ const API_HEADERS = {
   Referer: SITE + "/",
 };
 
-// Fast servers: Miami & Boise answer directly from tmdbId without title search.
-// Atlanta, Phoenix, Dallas serve as secondary fallback.
-// Omitted: Seattle (Cloudflare challenge), Vegas (11s+ hang), Portland/Chicago/Reno/Oakland (persistent 500s).
+const STREAM_HEADERS = {
+  "User-Agent": MEDIA_UA,
+  Referer: SITE + "/",
+  Origin: SITE,
+};
+
 const PRIMARY_SERVERS = ["miami", "boise"];
 const SECONDARY_SERVERS = ["atlanta", "phoenix", "dallas"];
 
@@ -52,62 +49,111 @@ const QUALITY_ORDER = {
   Unknown: -1,
 };
 
-/* ---------- mvm1 decryption ---------- */
+/* ---------- Pure ECMAScript mvm1 Decryption (QuickJS / Hermes Safe) ---------- */
 
 const MAGIC = [109, 118, 109, 49]; // "mvm1"
+const B64_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
-function fin(e) {
-  e >>>= 0;
+function mix(e) {
+  e = e >>> 0;
   e ^= e >>> 16;
   e = Math.imul(e, 0x85ebca6b) >>> 0;
   e ^= e >>> 13;
   e = Math.imul(e, 0xc2b2ae35) >>> 0;
-  e ^= e >>> 16;
-  return e >>> 0;
+  return (e ^ (e >>> 16)) >>> 0;
 }
 
-function rot(e, a) {
-  e >>>= 0;
+function rotl(e, a) {
+  e = e >>> 0;
   a &= 31;
-  if (a === 0) return e >>> 0;
-  return ((e << a) | (e >>> (32 - a))) >>> 0;
+  return a === 0 ? e : ((e << a) | (e >>> (32 - a))) >>> 0;
 }
 
-function fnv(str) {
-  let a = 0x811c9dc5;
-  for (let t = 0; t < str.length; t++)
-    a = Math.imul(a ^ str.charCodeAt(t), 0x1000193) >>> 0;
-  return fin(a);
-}
-
-function makeState(seed, mediaId) {
-  const S = Array(61);
-  let s = fin(fnv(seed) ^ fin((mediaId >>> 0) ^ 0x9e3779b9)) >>> 0;
-  for (let e = 0; e < 8; e++) {
-    const a = s % 61;
-    s = rot((s + 0x9e3779b9) >>> 0, 7 + (7 & e));
-    S[a] = (s ^ fin(s)) >>> 0;
-    s = fin((s + a) >>> 0);
+function b64decode(str) {
+  str = String(str || "")
+    .replace(/-/g, "+")
+    .replace(/_/g, "/")
+    .replace(/[^A-Za-z0-9+/]/g, "");
+  const out = [];
+  let buf = 0;
+  let bits = 0;
+  for (let i = 0; i < str.length; i++) {
+    buf = (buf << 6) | B64_CHARS.indexOf(str.charAt(i));
+    bits += 6;
+    if (bits >= 8) {
+      bits -= 8;
+      out.push((buf >> bits) & 255);
+      buf &= (1 << bits) - 1;
+    }
   }
-  return { S: S, acc: fin(0xa5a5a5a5 ^ s) >>> 0 };
+  return new Uint8Array(out);
+}
+
+function utf8decode(bytes) {
+  let s = "";
+  let i = 0;
+  while (i < bytes.length) {
+    const c = bytes[i++];
+    let cp;
+    if (c < 0x80) {
+      cp = c;
+    } else if (c < 0xe0) {
+      cp = ((c & 31) << 6) | (bytes[i++] & 63);
+    } else if (c < 0xf0) {
+      cp = ((c & 15) << 12) | ((bytes[i++] & 63) << 6) | (bytes[i++] & 63);
+    } else {
+      cp =
+        ((c & 7) << 18) |
+        ((bytes[i++] & 63) << 12) |
+        ((bytes[i++] & 63) << 6) |
+        (bytes[i++] & 63);
+    }
+    if (cp > 0xffff) {
+      cp -= 0x10000;
+      s += String.fromCharCode(0xd800 + (cp >> 10), 0xdc00 + (cp & 1023));
+    } else {
+      s += String.fromCharCode(cp);
+    }
+  }
+  return s;
+}
+
+function initState(seed, mediaId) {
+  let fnv = 0x811c9dc5;
+  for (let t = 0; t < seed.length; t++) {
+    fnv = Math.imul(fnv ^ seed.charCodeAt(t), 0x1000193) >>> 0;
+  }
+  const S = new Uint32Array(61);
+  const used = new Uint8Array(61);
+  let n = mix((mix(fnv) ^ mix(((Number(mediaId) >>> 0) ^ 0x9e3779b9) >>> 0)) >>> 0) >>> 0;
+  for (let e = 0; e < 8; e++) {
+    const a = n % 61;
+    n = rotl((n + 0x9e3779b9) >>> 0, 7 + (7 & e));
+    S[a] = (n ^ mix(n)) >>> 0;
+    used[a] = 1;
+    n = mix((n + a) >>> 0);
+  }
+  return { S: S, used: used, acc: mix(0xa5a5a5a5 ^ n) >>> 0 };
 }
 
 function keystream(seed, mediaId, len) {
-  const state = makeState(seed, mediaId);
-  const S = state.S;
-  let acc = state.acc;
+  const st = initState(seed, mediaId);
+  const S = st.S;
+  const used = st.used;
+  let acc = st.acc;
   const out = new Uint8Array(len);
   let counter = 0;
   for (let e = 0; e < len; ) {
     const dd = acc % 61;
-    const negIn = 0 - Number(dd in S);
+    const negIn = used[dd] ? -1 : 0;
     const r = S[dd] >>> 0;
     const cc = Math.imul(0x9e3779b9, counter + 1) >>> 0;
     const nn = (r ^ cc) >>> 0;
-    let b = ((acc ^ nn) >>> 0) | ((acc & nn & negIn) >>> 0);
-    b = (rot((b + acc) >>> 0, 31 & dd) ^ rot(acc, 31 & Math.imul(dd, 7))) >>> 0;
-    acc = fin((b + 0x9e3779b9) >>> 0);
+    let b = (((acc ^ nn) >>> 0) | ((acc & nn & negIn) >>> 0)) >>> 0;
+    b = (rotl((b + acc) >>> 0, 31 & dd) ^ rotl(acc, 31 & Math.imul(dd, 7))) >>> 0;
+    acc = mix((b + 0x9e3779b9) >>> 0);
     S[dd] = acc >>> 0;
+    used[dd] = 1;
     const word = acc >>> 0;
     counter++;
     out[e++] = 255 & word;
@@ -118,32 +164,15 @@ function keystream(seed, mediaId, len) {
   return out;
 }
 
-function b64urlDecode(text) {
-  const a = text
-    .replace(/-/g, "+")
-    .replace(/_/g, "/")
-    .padEnd(4 * Math.ceil(text.length / 4), "=");
-  if (typeof atob === "function") {
-    const bin = atob(a);
-    const out = new Uint8Array(bin.length);
-    for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
-    return out;
-  }
-  return new Uint8Array(Buffer.from(a, "base64"));
-}
-
 function decryptSources(payloadText, seed, mediaId) {
-  const payload = b64urlDecode(payloadText.trim());
-  const ks = keystream(seed, Number(mediaId), payload.length);
-  const out = new Uint8Array(payload.length);
-  for (let e = 0; e < payload.length; e++) out[e] = payload[e] ^ ks[e];
-  for (let e = 0; e < MAGIC.length; e++) {
-    if (out[e] !== MAGIC[e]) throw new Error("mvm1 decrypt failed");
+  const cleanText = String(payloadText || "").replace(/^\s*"|"\s*$/g, "").trim();
+  const data = b64decode(cleanText);
+  const ks = keystream(seed, Number(mediaId), data.length);
+  for (let j = 0; j < data.length; j++) data[j] ^= ks[j];
+  for (let j = 0; j < MAGIC.length; j++) {
+    if (data[j] !== MAGIC[j]) throw new Error("mvm1 magic mismatch");
   }
-  const body = out.subarray(MAGIC.length);
-  if (typeof TextDecoder !== "undefined")
-    return new TextDecoder("utf-8").decode(body);
-  return Buffer.from(body).toString("utf8");
+  return utf8decode(data.subarray(MAGIC.length));
 }
 
 /* ---------- Network helpers ---------- */
@@ -162,13 +191,24 @@ function timeout(promise, ms = 3500) {
   ]);
 }
 
+function buildQuery(params) {
+  const parts = [];
+  for (const k of Object.keys(params)) {
+    const v = params[k];
+    if (v !== undefined && v !== null && v !== "") {
+      parts.push(encodeURIComponent(k) + "=" + encodeURIComponent(String(v)));
+    }
+  }
+  return parts.join("&");
+}
+
 const seedCache = new Map();
 
 async function getSeed(mediaId) {
   const hit = seedCache.get(mediaId);
   if (hit && hit.expiresAt - 5000 > Date.now()) return hit.seed;
   const res = await timeout(
-    fetch(API + "/seed?mediaId=" + mediaId, {
+    fetch(API + "/seed?mediaId=" + encodeURIComponent(mediaId), {
       headers: API_HEADERS,
     }),
     3500
@@ -185,22 +225,21 @@ async function getSeed(mediaId) {
 async function fetchServerSources(server, params, mediaId) {
   const attempt = async () => {
     const seed = await getSeed(mediaId);
-    const qs = new URLSearchParams();
-    for (const k of Object.keys(params)) {
-      const v = params[k];
-      if (v !== undefined && v !== null && v !== "") qs.set(k, String(v));
-    }
-    qs.set("enc", "2");
-    qs.set("seed", seed);
+    const queryParams = Object.assign({}, params, {
+      enc: "2",
+      seed: seed,
+    });
+    const url = API + "/" + server + "/sources?" + buildQuery(queryParams);
     const res = await timeout(
-      fetch(API + "/" + server + "/sources?" + qs.toString(), {
+      fetch(url, {
         headers: API_HEADERS,
       }),
       3500
     );
     if (!res.ok) throw new Error("sources HTTP " + res.status);
     const text = await res.text();
-    return JSON.parse(decryptSources(text, seed, mediaId));
+    const decrypted = decryptSources(text, seed, mediaId);
+    return JSON.parse(decrypted);
   };
   try {
     return await attempt();
@@ -241,9 +280,10 @@ async function fetchDetailParams(tmdbId, mediaType) {
 
 async function fetchSubtitles(tmdbId, mediaType, season, episode) {
   try {
-    let url = SUBS_API + "?id=" + tmdbId;
-    if (mediaType === "tv")
+    let url = SUBS_API + "?id=" + encodeURIComponent(tmdbId);
+    if (mediaType === "tv") {
       url += "&season=" + (season || 1) + "&episode=" + (episode || 1);
+    }
     const res = await timeout(
       fetch(url, { headers: { "User-Agent": BROWSER_UA } }),
       3000
@@ -262,7 +302,7 @@ async function fetchSubtitles(tmdbId, mediaType, season, episode) {
         url: item.url,
         language: lang,
         name: item.display || lang,
-        headers: { "User-Agent": MEDIA_UA },
+        headers: STREAM_HEADERS,
       });
       if (out.length >= 20) break;
     }
@@ -306,7 +346,6 @@ async function getStreams(tmdbId, mediaType, season, episode) {
 
     // 1. Kick off seed, subtitle search, and detail page in parallel
     const seedPromise = getSeed(cleanId);
-    const subsPromise = fetchSubtitles(cleanId, type, s, ep);
     const detailPromise = fetchDetailParams(cleanId, type);
 
     // 2. Query primary servers (Miami & Boise) as soon as seed is ready
@@ -333,12 +372,6 @@ async function getStreams(tmdbId, mediaType, season, episode) {
     const seenUrls = new Set();
     let payloadSubs = [];
 
-    const streamHeaders = {
-      "User-Agent": MEDIA_UA,
-      Referer: SITE + "/",
-      Origin: SITE,
-    };
-
     function collectSources(data, server) {
       if (!data) return;
       if (Array.isArray(data.subtitles) && data.subtitles.length && !payloadSubs.length) {
@@ -348,9 +381,33 @@ async function getStreams(tmdbId, mediaType, season, episode) {
             url: sub.url || sub.file,
             language: sub.language || sub.lang || "und",
             name: sub.display || sub.label || sub.language || "Subtitle",
-            headers: streamHeaders,
+            headers: STREAM_HEADERS,
           }));
       }
+
+      // Add adaptive master playlist if available
+      if (data.playlist && !seenUrls.has(data.playlist)) {
+        seenUrls.add(data.playlist);
+        streams.push({
+          name: "Movy " + serverTitle(server) + " - Auto (Master)",
+          title:
+            (type === "tv"
+              ? "S" + String(s).padStart(2, "0") + "E" + String(ep).padStart(2, "0")
+              : "Movie") + " - Auto (up to 4K) HLS",
+          url: data.playlist,
+          quality: "Auto",
+          headers: STREAM_HEADERS,
+          behaviorHints: {
+            notWebReady: true,
+            proxyHeaders: {
+              request: STREAM_HEADERS,
+            },
+          },
+          subtitles: [],
+        });
+      }
+
+      // Add individual qualities
       const sources = Array.isArray(data.sources) ? data.sources : [];
       for (const src of sources) {
         if (!src || !src.url || seenUrls.has(src.url)) continue;
@@ -369,11 +426,11 @@ async function getStreams(tmdbId, mediaType, season, episode) {
             " HLS",
           url: src.url,
           quality: q,
-          headers: streamHeaders,
+          headers: STREAM_HEADERS,
           behaviorHints: {
             notWebReady: true,
             proxyHeaders: {
-              request: streamHeaders,
+              request: STREAM_HEADERS,
             },
           },
           subtitles: [],
@@ -411,9 +468,11 @@ async function getStreams(tmdbId, mediaType, season, episode) {
 
     if (!streams.length) return [];
 
-    const subs = payloadSubs.length
-      ? payloadSubs
-      : await timeout(subsPromise, 2000).catch(() => []);
+    // 4. Attach subtitles: prioritize embedded payload subtitles
+    let subs = payloadSubs;
+    if (!subs.length) {
+      subs = await timeout(fetchSubtitles(cleanId, type, s, ep), 2500).catch(() => []);
+    }
     for (const st of streams) st.subtitles = subs || [];
 
     streams.sort(

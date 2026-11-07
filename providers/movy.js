@@ -1,6 +1,6 @@
 /**
  * movy - Built from src/movy/
- * Generated: 2026-11-07T22:39:52.650Z
+ * Generated: 2026-11-07T22:55:58.192Z
  */
 var __async = (__this, __arguments, generator) => {
   return new Promise((resolve, reject) => {
@@ -34,6 +34,11 @@ var API_HEADERS = {
   Origin: SITE,
   Referer: SITE + "/"
 };
+var STREAM_HEADERS = {
+  "User-Agent": MEDIA_UA,
+  Referer: SITE + "/",
+  Origin: SITE
+};
 var PRIMARY_SERVERS = ["miami", "boise"];
 var SECONDARY_SERVERS = ["atlanta", "phoenix", "dallas"];
 var QUALITY_ORDER = {
@@ -47,55 +52,95 @@ var QUALITY_ORDER = {
   Unknown: -1
 };
 var MAGIC = [109, 118, 109, 49];
-function fin(e) {
-  e >>>= 0;
+var B64_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+function mix(e) {
+  e = e >>> 0;
   e ^= e >>> 16;
   e = Math.imul(e, 2246822507) >>> 0;
   e ^= e >>> 13;
   e = Math.imul(e, 3266489909) >>> 0;
-  e ^= e >>> 16;
-  return e >>> 0;
+  return (e ^ e >>> 16) >>> 0;
 }
-function rot(e, a) {
-  e >>>= 0;
+function rotl(e, a) {
+  e = e >>> 0;
   a &= 31;
-  if (a === 0)
-    return e >>> 0;
-  return (e << a | e >>> 32 - a) >>> 0;
+  return a === 0 ? e : (e << a | e >>> 32 - a) >>> 0;
 }
-function fnv(str) {
-  let a = 2166136261;
-  for (let t = 0; t < str.length; t++)
-    a = Math.imul(a ^ str.charCodeAt(t), 16777619) >>> 0;
-  return fin(a);
-}
-function makeState(seed, mediaId) {
-  const S = Array(61);
-  let s = fin(fnv(seed) ^ fin(mediaId >>> 0 ^ 2654435769)) >>> 0;
-  for (let e = 0; e < 8; e++) {
-    const a = s % 61;
-    s = rot(s + 2654435769 >>> 0, 7 + (7 & e));
-    S[a] = (s ^ fin(s)) >>> 0;
-    s = fin(s + a >>> 0);
+function b64decode(str) {
+  str = String(str || "").replace(/-/g, "+").replace(/_/g, "/").replace(/[^A-Za-z0-9+/]/g, "");
+  const out = [];
+  let buf = 0;
+  let bits = 0;
+  for (let i = 0; i < str.length; i++) {
+    buf = buf << 6 | B64_CHARS.indexOf(str.charAt(i));
+    bits += 6;
+    if (bits >= 8) {
+      bits -= 8;
+      out.push(buf >> bits & 255);
+      buf &= (1 << bits) - 1;
+    }
   }
-  return { S, acc: fin(2779096485 ^ s) >>> 0 };
+  return new Uint8Array(out);
+}
+function utf8decode(bytes) {
+  let s = "";
+  let i = 0;
+  while (i < bytes.length) {
+    const c = bytes[i++];
+    let cp;
+    if (c < 128) {
+      cp = c;
+    } else if (c < 224) {
+      cp = (c & 31) << 6 | bytes[i++] & 63;
+    } else if (c < 240) {
+      cp = (c & 15) << 12 | (bytes[i++] & 63) << 6 | bytes[i++] & 63;
+    } else {
+      cp = (c & 7) << 18 | (bytes[i++] & 63) << 12 | (bytes[i++] & 63) << 6 | bytes[i++] & 63;
+    }
+    if (cp > 65535) {
+      cp -= 65536;
+      s += String.fromCharCode(55296 + (cp >> 10), 56320 + (cp & 1023));
+    } else {
+      s += String.fromCharCode(cp);
+    }
+  }
+  return s;
+}
+function initState(seed, mediaId) {
+  let fnv = 2166136261;
+  for (let t = 0; t < seed.length; t++) {
+    fnv = Math.imul(fnv ^ seed.charCodeAt(t), 16777619) >>> 0;
+  }
+  const S = new Uint32Array(61);
+  const used = new Uint8Array(61);
+  let n = mix((mix(fnv) ^ mix((Number(mediaId) >>> 0 ^ 2654435769) >>> 0)) >>> 0) >>> 0;
+  for (let e = 0; e < 8; e++) {
+    const a = n % 61;
+    n = rotl(n + 2654435769 >>> 0, 7 + (7 & e));
+    S[a] = (n ^ mix(n)) >>> 0;
+    used[a] = 1;
+    n = mix(n + a >>> 0);
+  }
+  return { S, used, acc: mix(2779096485 ^ n) >>> 0 };
 }
 function keystream(seed, mediaId, len) {
-  const state = makeState(seed, mediaId);
-  const S = state.S;
-  let acc = state.acc;
+  const st = initState(seed, mediaId);
+  const S = st.S;
+  const used = st.used;
+  let acc = st.acc;
   const out = new Uint8Array(len);
   let counter = 0;
   for (let e = 0; e < len; ) {
     const dd = acc % 61;
-    const negIn = 0 - Number(dd in S);
+    const negIn = used[dd] ? -1 : 0;
     const r = S[dd] >>> 0;
     const cc = Math.imul(2654435769, counter + 1) >>> 0;
     const nn = (r ^ cc) >>> 0;
-    let b = (acc ^ nn) >>> 0 | (acc & nn & negIn) >>> 0;
-    b = (rot(b + acc >>> 0, 31 & dd) ^ rot(acc, 31 & Math.imul(dd, 7))) >>> 0;
-    acc = fin(b + 2654435769 >>> 0);
+    let b = ((acc ^ nn) >>> 0 | (acc & nn & negIn) >>> 0) >>> 0;
+    b = (rotl(b + acc >>> 0, 31 & dd) ^ rotl(acc, 31 & Math.imul(dd, 7))) >>> 0;
+    acc = mix(b + 2654435769 >>> 0);
     S[dd] = acc >>> 0;
+    used[dd] = 1;
     const word = acc >>> 0;
     counter++;
     out[e++] = 255 & word;
@@ -108,31 +153,17 @@ function keystream(seed, mediaId, len) {
   }
   return out;
 }
-function b64urlDecode(text) {
-  const a = text.replace(/-/g, "+").replace(/_/g, "/").padEnd(4 * Math.ceil(text.length / 4), "=");
-  if (typeof atob === "function") {
-    const bin = atob(a);
-    const out = new Uint8Array(bin.length);
-    for (let i = 0; i < bin.length; i++)
-      out[i] = bin.charCodeAt(i);
-    return out;
-  }
-  return new Uint8Array(Buffer.from(a, "base64"));
-}
 function decryptSources(payloadText, seed, mediaId) {
-  const payload = b64urlDecode(payloadText.trim());
-  const ks = keystream(seed, Number(mediaId), payload.length);
-  const out = new Uint8Array(payload.length);
-  for (let e = 0; e < payload.length; e++)
-    out[e] = payload[e] ^ ks[e];
-  for (let e = 0; e < MAGIC.length; e++) {
-    if (out[e] !== MAGIC[e])
-      throw new Error("mvm1 decrypt failed");
+  const cleanText = String(payloadText || "").replace(/^\s*"|"\s*$/g, "").trim();
+  const data = b64decode(cleanText);
+  const ks = keystream(seed, Number(mediaId), data.length);
+  for (let j = 0; j < data.length; j++)
+    data[j] ^= ks[j];
+  for (let j = 0; j < MAGIC.length; j++) {
+    if (data[j] !== MAGIC[j])
+      throw new Error("mvm1 magic mismatch");
   }
-  const body = out.subarray(MAGIC.length);
-  if (typeof TextDecoder !== "undefined")
-    return new TextDecoder("utf-8").decode(body);
-  return Buffer.from(body).toString("utf8");
+  return utf8decode(data.subarray(MAGIC.length));
 }
 function timeout(promise, ms = 3500) {
   if (typeof setTimeout !== "function")
@@ -149,6 +180,16 @@ function timeout(promise, ms = 3500) {
     timeoutPromise
   ]);
 }
+function buildQuery(params) {
+  const parts = [];
+  for (const k of Object.keys(params)) {
+    const v = params[k];
+    if (v !== void 0 && v !== null && v !== "") {
+      parts.push(encodeURIComponent(k) + "=" + encodeURIComponent(String(v)));
+    }
+  }
+  return parts.join("&");
+}
 var seedCache = /* @__PURE__ */ new Map();
 function getSeed(mediaId) {
   return __async(this, null, function* () {
@@ -156,7 +197,7 @@ function getSeed(mediaId) {
     if (hit && hit.expiresAt - 5e3 > Date.now())
       return hit.seed;
     const res = yield timeout(
-      fetch(API + "/seed?mediaId=" + mediaId, {
+      fetch(API + "/seed?mediaId=" + encodeURIComponent(mediaId), {
         headers: API_HEADERS
       }),
       3500
@@ -175,16 +216,13 @@ function fetchServerSources(server, params, mediaId) {
   return __async(this, null, function* () {
     const attempt = () => __async(this, null, function* () {
       const seed = yield getSeed(mediaId);
-      const qs = new URLSearchParams();
-      for (const k of Object.keys(params)) {
-        const v = params[k];
-        if (v !== void 0 && v !== null && v !== "")
-          qs.set(k, String(v));
-      }
-      qs.set("enc", "2");
-      qs.set("seed", seed);
+      const queryParams = Object.assign({}, params, {
+        enc: "2",
+        seed
+      });
+      const url = API + "/" + server + "/sources?" + buildQuery(queryParams);
       const res = yield timeout(
-        fetch(API + "/" + server + "/sources?" + qs.toString(), {
+        fetch(url, {
           headers: API_HEADERS
         }),
         3500
@@ -192,7 +230,8 @@ function fetchServerSources(server, params, mediaId) {
       if (!res.ok)
         throw new Error("sources HTTP " + res.status);
       const text = yield res.text();
-      return JSON.parse(decryptSources(text, seed, mediaId));
+      const decrypted = decryptSources(text, seed, mediaId);
+      return JSON.parse(decrypted);
     });
     try {
       return yield attempt();
@@ -235,9 +274,10 @@ function fetchDetailParams(tmdbId, mediaType) {
 function fetchSubtitles(tmdbId, mediaType, season, episode) {
   return __async(this, null, function* () {
     try {
-      let url = SUBS_API + "?id=" + tmdbId;
-      if (mediaType === "tv")
+      let url = SUBS_API + "?id=" + encodeURIComponent(tmdbId);
+      if (mediaType === "tv") {
         url += "&season=" + (season || 1) + "&episode=" + (episode || 1);
+      }
       const res = yield timeout(
         fetch(url, { headers: { "User-Agent": BROWSER_UA } }),
         3e3
@@ -260,7 +300,7 @@ function fetchSubtitles(tmdbId, mediaType, season, episode) {
           url: item.url,
           language: lang,
           name: item.display || lang,
-          headers: { "User-Agent": MEDIA_UA }
+          headers: STREAM_HEADERS
         });
         if (out.length >= 20)
           break;
@@ -309,8 +349,25 @@ function getStreams(tmdbId, mediaType, season, episode) {
             url: sub.url || sub.file,
             language: sub.language || sub.lang || "und",
             name: sub.display || sub.label || sub.language || "Subtitle",
-            headers: streamHeaders
+            headers: STREAM_HEADERS
           }));
+        }
+        if (data.playlist && !seenUrls.has(data.playlist)) {
+          seenUrls.add(data.playlist);
+          streams.push({
+            name: "Movy " + serverTitle(server) + " - Auto (Master)",
+            title: (type === "tv" ? "S" + String(s).padStart(2, "0") + "E" + String(ep).padStart(2, "0") : "Movie") + " - Auto (up to 4K) HLS",
+            url: data.playlist,
+            quality: "Auto",
+            headers: STREAM_HEADERS,
+            behaviorHints: {
+              notWebReady: true,
+              proxyHeaders: {
+                request: STREAM_HEADERS
+              }
+            },
+            subtitles: []
+          });
         }
         const sources = Array.isArray(data.sources) ? data.sources : [];
         for (const src of sources) {
@@ -324,11 +381,11 @@ function getStreams(tmdbId, mediaType, season, episode) {
             title: (type === "tv" ? "S" + String(s).padStart(2, "0") + "E" + String(ep).padStart(2, "0") : "Movie") + " - " + q + (isLangLabel ? " (" + String(src.quality) + ")" : "") + " HLS",
             url: src.url,
             quality: q,
-            headers: streamHeaders,
+            headers: STREAM_HEADERS,
             behaviorHints: {
               notWebReady: true,
               proxyHeaders: {
-                request: streamHeaders
+                request: STREAM_HEADERS
               }
             },
             subtitles: []
@@ -345,7 +402,6 @@ function getStreams(tmdbId, mediaType, season, episode) {
       const s = type === "tv" ? Math.max(1, parseInt(season, 10) || 1) : null;
       const ep = type === "tv" ? Math.max(1, parseInt(episode, 10) || 1) : null;
       const seedPromise = getSeed(cleanId);
-      const subsPromise = fetchSubtitles(cleanId, type, s, ep);
       const detailPromise = fetchDetailParams(cleanId, type);
       let seed;
       try {
@@ -367,11 +423,6 @@ function getStreams(tmdbId, mediaType, season, episode) {
       const streams = [];
       const seenUrls = /* @__PURE__ */ new Set();
       let payloadSubs = [];
-      const streamHeaders = {
-        "User-Agent": MEDIA_UA,
-        Referer: SITE + "/",
-        Origin: SITE
-      };
       for (let i = 0; i < PRIMARY_SERVERS.length; i++) {
         const res = primaryResults[i];
         if (res.status === "fulfilled" && res.value) {
@@ -398,7 +449,10 @@ function getStreams(tmdbId, mediaType, season, episode) {
       }
       if (!streams.length)
         return [];
-      const subs = payloadSubs.length ? payloadSubs : yield timeout(subsPromise, 2e3).catch(() => []);
+      let subs = payloadSubs;
+      if (!subs.length) {
+        subs = yield timeout(fetchSubtitles(cleanId, type, s, ep), 2500).catch(() => []);
+      }
       for (const st of streams)
         st.subtitles = subs || [];
       streams.sort(

@@ -1,6 +1,6 @@
 {
     "name": "nuvio-7movies",
-    "version": "1.0.4",
+    "version": "1.0.5",
     "description": "7Movies & Movy providers for Nuvio",
     "scripts": {
         "build": "node build.js",
