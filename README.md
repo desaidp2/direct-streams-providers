@@ -1,12 +1,12 @@
 # 7Movies for Nuvio
 
-[![Version](https://img.shields.io/badge/version-1.0.4-blue.svg)](manifest.json)
+[![Version](https://img.shields.io/badge/version-1.0.5-blue.svg)](manifest.json)
 [![Platform](https://img.shields.io/badge/platform-Nuvio%20(Android%20TV%20%7C%20Fire%20TV%20%7C%20Mobile)-green.svg)](https://nuvioapp.space)
-[![Playback Verified](https://img.shields.io/badge/playback-verified%20live%20✅-brightgreen.svg)](docs/assets/live_playback_osd.png)
+[![Playback Verified](https://img.shields.io/badge/playback-verified%20live%20✅-brightgreen.svg)](docs/assets/movy_playback_osd.png)
 
 A high-performance, low-memory Nuvio plugin repository that adds **7movies.ac** and **movy.sx** as stream sources.
 
-7Movies is a TMDB-keyed catalog (`/movie/{tmdbId}/watch`, `/tv/{tmdbId}/watch`). Because Nuvio hands the scraper the clean TMDB ID, **zero search latency is required**. The provider resolves direct MP4 and HLS streams (up to 1080p) complete with localized subtitle tracks and ExoPlayer native header forwarding.
+Both providers are TMDB-keyed catalogs (`/movie/{tmdbId}`, `/tv/{tmdbId}`). Because Nuvio hands the scraper the clean TMDB ID, **zero search latency is required**. The providers resolve direct MP4 and HLS streams (up to 4K / 2160p) complete with localized subtitle tracks and ExoPlayer native header forwarding.
 
 ---
 
@@ -14,10 +14,10 @@ A high-performance, low-memory Nuvio plugin repository that adds **7movies.ac** 
 
 Tested and verified live on **onn. 4K Plus Streaming (Android TV)** running Nuvio TV:
 
-| Stream Discovery | Hardware-Accelerated Playback |
+| 7Movies & Movy Stream Selection | Movy 4K HLS Live Playback |
 | :---: | :---: |
-| ![Streams Modal](docs/assets/streams_screen.png) | ![Playback Active](docs/assets/live_playback_osd.png) |
-| *Stream selection sheet with 1080p, 480p, 360p MP4s* | *Live playback with subtitles, hardware decoding, and zero buffer stalls* |
+| ![Streams Modal](docs/assets/streams_screen.png) | ![Movy Playback Active](docs/assets/movy_playback_osd.png) |
+| *Stream selection sheet with 7Movies MP4s and Movy 4K HLS* | *Live 4K hardware decoding on Amlogic (`c2.amlogic.avc.decoder`), subtitles, and zero buffer stalls* |
 
 ---
 
