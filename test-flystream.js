@@ -149,9 +149,15 @@ async function runTests() {
   const n = apiCalls().length;
   assert.deepStrictEqual(await getStreams("9", "movie"), []);
   assert.strictEqual(apiCalls().length, n, "a failed lookup is cached");
+  // ...but only briefly (30 s), unlike a genuine empty answer (5 min)
+  const realNow = Date.now;
+  Date.now = () => realNow() + 31 * 1000;
+  await getStreams("9", "movie");
+  Date.now = realNow;
+  assert.strictEqual(apiCalls().length, n + 1, "a failed lookup expires after ~30 s");
   apiMode = "badjson";
   assert.deepStrictEqual(await getStreams("10", "movie"), []);
-  console.log("✓ 403 and non-JSON body -> [] (miss cached)");
+  console.log("✓ 403 and non-JSON body -> [] (failure cached 30 s, not 5 min)");
 
   // Host challengeBrowser present (server.js on the Pi): the API goes through it, not fetch
   apiMode = "403"; // fetch would fail, so success proves the browser path was used

@@ -412,6 +412,7 @@ var { fetchTitleMetadata } = require_tmdb_title_metadata();
 var MAX_CACHE_SIZE = 100;
 var CACHE_TTL_MS = 10 * 60 * 1e3;
 var EMPTY_TTL_MS = 5 * 60 * 1e3;
+var FAILURE_TTL_MS = 30 * 1e3;
 var PAGE_TIMEOUT_MS = 5e3;
 var streamCache = new TtlCache(MAX_CACHE_SIZE, CACHE_TTL_MS);
 var inflight = /* @__PURE__ */ new Map();
@@ -540,7 +541,8 @@ function resolveStreams(tmdbId, normType, s, e, cacheKey, opts) {
       if (!result.ok)
         console.warn(`[FlyStream] API call failed (${result.reason}) for ${cacheKey}`);
       const streams = result.ok ? sortByQuality(result.streams) : [];
-      streamCache.set(cacheKey, streams, streams.length ? CACHE_TTL_MS : EMPTY_TTL_MS);
+      const ttl = !result.ok ? FAILURE_TTL_MS : streams.length ? CACHE_TTL_MS : EMPTY_TTL_MS;
+      streamCache.set(cacheKey, streams, ttl);
       console.log(`[FlyStream] ${streams.length} stream(s) for ${cacheKey}`);
       return streams;
     } catch (err) {

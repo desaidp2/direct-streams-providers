@@ -31,6 +31,10 @@ const { fetchTitleMetadata } = require("./tmdb-title-metadata");
 const MAX_CACHE_SIZE = 100;
 const CACHE_TTL_MS = 10 * 60 * 1000;
 const EMPTY_TTL_MS = 5 * 60 * 1000;
+// A failed lookup (timeout, browser error, non-200, bad JSON) is a transient state, not an
+// answer: cache it briefly so a retry storm is absorbed, but a single slow API call no longer
+// hides the title for EMPTY_TTL_MS. Seen live: one 7 s browser timeout -> 5 min of no streams.
+const FAILURE_TTL_MS = 30 * 1000;
 // Hard cap on one page load: the old fetch had no timeout, so a stalled site held every
 // Stremio/WuPlay stream response open (the router waits for all providers).
 const PAGE_TIMEOUT_MS = 5000;
@@ -201,7 +205,8 @@ async function resolveStreams(tmdbId, normType, s, e, cacheKey, opts) {
     if (!result.ok) console.warn(`[FlyStream] API call failed (${result.reason}) for ${cacheKey}`);
 
     const streams = result.ok ? sortByQuality(result.streams) : [];
-    streamCache.set(cacheKey, streams, streams.length ? CACHE_TTL_MS : EMPTY_TTL_MS);
+    const ttl = !result.ok ? FAILURE_TTL_MS : streams.length ? CACHE_TTL_MS : EMPTY_TTL_MS;
+    streamCache.set(cacheKey, streams, ttl);
     console.log(`[FlyStream] ${streams.length} stream(s) for ${cacheKey}`);
     return streams;
   } catch (err) {
