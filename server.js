@@ -12,7 +12,6 @@
  */
 
 const http = require("http");
-const url = require("url");
 const { route, CORS_HEADERS } = require("./src/stremio/router");
 
 const PORT = parseInt(process.env.PORT || "7070", 10);
@@ -33,10 +32,11 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  const parsedUrl = url.parse(req.url, true);
-  const pathname = parsedUrl.pathname || "/";
-  const query = parsedUrl.query || {};
   const host = req.headers.host || `127.0.0.1:${PORT}`;
+  // WHATWG URL instead of the deprecated url.parse (DEP0169)
+  const parsedUrl = new URL(req.url, "http://127.0.0.1");
+  const pathname = parsedUrl.pathname || "/";
+  const query = Object.fromEntries(parsedUrl.searchParams.entries());
   const proto = req.headers["x-forwarded-proto"] || "http";
   const baseUrl = `${proto}://${host}`;
 

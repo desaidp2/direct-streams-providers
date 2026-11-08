@@ -1,7 +1,11 @@
 /**
  * flystream - Built from src/flystream/
- * Generated: 2026-11-08T04:38:51.580Z
+ * Generated: 2026-11-08T05:31:17.681Z
  */
+var __getOwnPropNames = Object.getOwnPropertyNames;
+var __commonJS = (cb, mod) => function __require() {
+  return mod || (0, cb[__getOwnPropNames(cb)[0]])((mod = { exports: {} }).exports, mod), mod.exports;
+};
 var __async = (__this, __arguments, generator) => {
   return new Promise((resolve, reject) => {
     var fulfilled = (value) => {
@@ -23,6 +27,84 @@ var __async = (__this, __arguments, generator) => {
   });
 };
 
+// src/shared/provider-utils.js
+var require_provider_utils = __commonJS({
+  "src/shared/provider-utils.js"(exports2, module2) {
+    var QUALITY_ORDER = {
+      "4K": 6,
+      "1440p": 5,
+      "1080p": 4,
+      "720p": 3,
+      "480p": 2,
+      "360p": 1,
+      Auto: 0,
+      Unknown: -1
+    };
+    function qualityRank(quality) {
+      return Object.prototype.hasOwnProperty.call(QUALITY_ORDER, quality) ? QUALITY_ORDER[quality] : -2;
+    }
+    function sortByQuality2(streams) {
+      return streams.sort((a, b) => qualityRank(b.quality) - qualityRank(a.quality));
+    }
+    function withTimeout2(promise, ms, label) {
+      if (typeof setTimeout !== "function")
+        return promise;
+      let timer;
+      const timeoutPromise = new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error((label || "Timeout") + " " + ms + "ms")), ms);
+      });
+      return Promise.race([promise, timeoutPromise]).then(
+        (value) => {
+          if (typeof clearTimeout === "function")
+            clearTimeout(timer);
+          return value;
+        },
+        (err) => {
+          if (typeof clearTimeout === "function")
+            clearTimeout(timer);
+          throw err;
+        }
+      );
+    }
+    var TtlCache2 = class {
+      constructor(limit, defaultTtlMs) {
+        this.limit = limit;
+        this.defaultTtlMs = defaultTtlMs;
+        this.map = /* @__PURE__ */ new Map();
+      }
+      get(key) {
+        const entry = this.map.get(key);
+        if (!entry)
+          return void 0;
+        if (entry.expiresAt <= Date.now()) {
+          this.map.delete(key);
+          return void 0;
+        }
+        this.map.delete(key);
+        this.map.set(key, entry);
+        return entry.value;
+      }
+      has(key) {
+        return this.get(key) !== void 0;
+      }
+      set(key, value, ttlMs) {
+        if (this.map.has(key))
+          this.map.delete(key);
+        else if (this.map.size >= this.limit)
+          this.map.delete(this.map.keys().next().value);
+        this.map.set(key, { value, expiresAt: Date.now() + (ttlMs || this.defaultTtlMs) });
+      }
+      delete(key) {
+        this.map.delete(key);
+      }
+      get size() {
+        return this.map.size;
+      }
+    };
+    module2.exports = { QUALITY_ORDER, qualityRank, sortByQuality: sortByQuality2, withTimeout: withTimeout2, TtlCache: TtlCache2 };
+  }
+});
+
 // src/flystream/index.js
 var BROWSER_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
 var MEDIA_UA = "okhttp/4.12.0";
@@ -38,62 +120,68 @@ var STREAM_HEADERS = {
   Referer: BASE_URL + "/",
   Origin: BASE_URL
 };
-var QUALITY_ORDER = {
-  "4K": 6,
-  "1440p": 5,
-  "1080p": 4,
-  "720p": 3,
-  "480p": 2,
-  "360p": 1,
-  Auto: 0,
-  Unknown: -1
-};
-var streamCache = /* @__PURE__ */ new Map();
+var { sortByQuality, withTimeout, TtlCache } = require_provider_utils();
 var MAX_CACHE_SIZE = 100;
 var CACHE_TTL_MS = 10 * 60 * 1e3;
-function setBoundedCache(cache, key, value) {
-  if (cache.size >= MAX_CACHE_SIZE) {
-    const oldest = cache.keys().next().value;
-    if (oldest)
-      cache.delete(oldest);
-  }
-  cache.set(key, value);
+var EMPTY_TTL_MS = 5 * 60 * 1e3;
+var PAGE_TIMEOUT_MS = 5e3;
+var streamCache = new TtlCache(MAX_CACHE_SIZE, CACHE_TTL_MS);
+function buildStream(name, title, url, quality) {
+  return {
+    name,
+    title,
+    url,
+    quality,
+    headers: STREAM_HEADERS,
+    behaviorHints: {
+      notWebReady: true,
+      proxyHeaders: {
+        request: STREAM_HEADERS
+      }
+    },
+    subtitles: []
+  };
 }
 function fetchPageDOM(url) {
   return __async(this, null, function* () {
     try {
-      if (typeof challengeBrowser !== "undefined" && challengeBrowser && typeof challengeBrowser.execute === "function") {
-        try {
-          const response = yield challengeBrowser.execute(url, {
-            method: "GET",
-            headers: { "User-Agent": BROWSER_UA },
-            evaluateJs: "document.documentElement.outerHTML",
-            waitForSelector: "body"
-          });
-          if (response && response.result) {
-            return response.result;
-          }
-        } catch (cbErr) {
-          console.warn("[FlyStream] challengeBrowser error, falling back to fetch:", cbErr.message || cbErr);
-        }
-      }
-      const res = yield fetch(url, {
-        method: "GET",
-        headers: HEADERS,
-        cache: "no-store"
-      });
-      if (res.status === 403 || res.status === 401) {
-        console.warn(`[FlyStream] Endpoint gated (${res.status}) on ${url}`);
-        return null;
-      }
-      if (!res.ok) {
-        return null;
-      }
-      return yield res.text();
+      return yield withTimeout(loadPage(url), PAGE_TIMEOUT_MS, "FlyStream page");
     } catch (err) {
       console.error("[FlyStream] fetchPageDOM failed:", err.message || err);
       return null;
     }
+  });
+}
+function loadPage(url) {
+  return __async(this, null, function* () {
+    if (typeof challengeBrowser !== "undefined" && challengeBrowser && typeof challengeBrowser.execute === "function") {
+      try {
+        const response = yield challengeBrowser.execute(url, {
+          method: "GET",
+          headers: { "User-Agent": BROWSER_UA },
+          evaluateJs: "document.documentElement.outerHTML",
+          waitForSelector: "body"
+        });
+        if (response && response.result) {
+          return response.result;
+        }
+      } catch (cbErr) {
+        console.warn("[FlyStream] challengeBrowser error, falling back to fetch:", cbErr.message || cbErr);
+      }
+    }
+    const res = yield fetch(url, {
+      method: "GET",
+      headers: HEADERS,
+      cache: "no-store"
+    });
+    if (res.status === 403 || res.status === 401) {
+      console.warn(`[FlyStream] Endpoint gated (${res.status}) on ${url}`);
+      return null;
+    }
+    if (!res.ok) {
+      return null;
+    }
+    return yield res.text();
   });
 }
 function search(query) {
@@ -151,13 +239,13 @@ function getStreams(tmdbId, mediaType = "movie", season = 1, episode = 1) {
     const normType = mediaType === "series" || mediaType === "tv" ? "tv" : "movie";
     const cacheKey = `${normType}:${tmdbId}:${season}:${episode}`;
     const cached = streamCache.get(cacheKey);
-    if (cached && cached.expiresAt > Date.now()) {
-      return cached.streams;
-    }
+    if (cached)
+      return cached;
     try {
       const targetUrl = normType === "tv" ? `${BASE_URL}/tv/${tmdbId}?season=${season}&episode=${episode}` : `${BASE_URL}/movie/${tmdbId}`;
       const htmlContent = yield fetchPageDOM(targetUrl);
       if (!htmlContent) {
+        streamCache.set(cacheKey, [], EMPTY_TTL_MS);
         return [];
       }
       const streams = [];
@@ -174,20 +262,9 @@ function getStreams(tmdbId, mediaType = "movie", season = 1, episode = 1) {
                 continue;
               seenUrls.add(streamUrl);
               const q = source.quality || "Auto";
-              streams.push({
-                name: `FlyStream - ${source.label || q}`,
-                title: `${title} - ${source.label || "HighSpeed"} (${q})`,
-                url: streamUrl,
-                quality: q,
-                headers: STREAM_HEADERS,
-                behaviorHints: {
-                  notWebReady: true,
-                  proxyHeaders: {
-                    request: STREAM_HEADERS
-                  }
-                },
-                subtitles: []
-              });
+              streams.push(
+                buildStream(`FlyStream - ${source.label || q}`, `${title} - ${source.label || "HighSpeed"} (${q})`, streamUrl, q)
+              );
             }
           }
         } catch (e) {
@@ -204,20 +281,8 @@ function getStreams(tmdbId, mediaType = "movie", season = 1, episode = 1) {
         if (seenUrls.has(streamUrl))
           continue;
         seenUrls.add(streamUrl);
-        streams.push({
-          name: `FlyStream - Mirror #${mirrorIndex}`,
-          title: `${title} - Mirror #${mirrorIndex++}`,
-          url: streamUrl,
-          quality: "Auto",
-          headers: STREAM_HEADERS,
-          behaviorHints: {
-            notWebReady: true,
-            proxyHeaders: {
-              request: STREAM_HEADERS
-            }
-          },
-          subtitles: []
-        });
+        streams.push(buildStream(`FlyStream - Mirror #${mirrorIndex}`, `${title} - Mirror #${mirrorIndex}`, streamUrl, "Auto"));
+        mirrorIndex++;
       }
       const mediaRegex = /https?:\/\/[^"'\s<>]+\.(m3u8|mp4)[^"'\s<>]*/gi;
       while ((match = mediaRegex.exec(htmlContent)) !== null) {
@@ -229,30 +294,10 @@ function getStreams(tmdbId, mediaType = "movie", season = 1, episode = 1) {
         const is1080 = /1080p/i.test(streamUrl);
         const is720 = /720p/i.test(streamUrl);
         const q = is4k ? "4K" : is1080 ? "1080p" : is720 ? "720p" : "Auto";
-        streams.push({
-          name: `FlyStream - ${q}`,
-          title: `${title} - Direct (${q})`,
-          url: streamUrl,
-          quality: q,
-          headers: STREAM_HEADERS,
-          behaviorHints: {
-            notWebReady: true,
-            proxyHeaders: {
-              request: STREAM_HEADERS
-            }
-          },
-          subtitles: []
-        });
+        streams.push(buildStream(`FlyStream - ${q}`, `${title} - Direct (${q})`, streamUrl, q));
       }
-      streams.sort(
-        (a, b) => (QUALITY_ORDER[b.quality] || -1) - (QUALITY_ORDER[a.quality] || -1)
-      );
-      if (streams.length > 0) {
-        setBoundedCache(streamCache, cacheKey, {
-          expiresAt: Date.now() + CACHE_TTL_MS,
-          streams
-        });
-      }
+      sortByQuality(streams);
+      streamCache.set(cacheKey, streams, streams.length ? CACHE_TTL_MS : EMPTY_TTL_MS);
       return streams;
     } catch (err) {
       console.error("[FlyStream] getStreams error:", err.message || err);

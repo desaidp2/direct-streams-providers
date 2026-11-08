@@ -32,28 +32,33 @@ const STREAM_HEADERS = {
   Origin: BASE_URL,
 };
 
-const QUALITY_ORDER = {
-  "4K": 6,
-  "1440p": 5,
-  "1080p": 4,
-  "720p": 3,
-  "480p": 2,
-  "360p": 1,
-  Auto: 0,
-  Unknown: -1,
-};
+const { sortByQuality, withTimeout, TtlCache } = require("../shared/provider-utils");
 
-// In-memory bounded cache
-const streamCache = new Map();
+// Bounded LRU cache. Misses are cached too (shorter), so a client retrying the same title
+// does not send the site another request each time.
 const MAX_CACHE_SIZE = 100;
 const CACHE_TTL_MS = 10 * 60 * 1000;
+const EMPTY_TTL_MS = 5 * 60 * 1000;
+// Hard cap on one page load: the old fetch had no timeout, so a stalled site held every
+// Stremio/WuPlay stream response open (the router waits for all providers).
+const PAGE_TIMEOUT_MS = 5000;
+const streamCache = new TtlCache(MAX_CACHE_SIZE, CACHE_TTL_MS);
 
-function setBoundedCache(cache, key, value) {
-  if (cache.size >= MAX_CACHE_SIZE) {
-    const oldest = cache.keys().next().value;
-    if (oldest) cache.delete(oldest);
-  }
-  cache.set(key, value);
+function buildStream(name, title, url, quality) {
+  return {
+    name: name,
+    title: title,
+    url: url,
+    quality: quality,
+    headers: STREAM_HEADERS,
+    behaviorHints: {
+      notWebReady: true,
+      proxyHeaders: {
+        request: STREAM_HEADERS,
+      },
+    },
+    subtitles: [],
+  };
 }
 
 /**
@@ -62,48 +67,53 @@ function setBoundedCache(cache, key, value) {
  */
 async function fetchPageDOM(url) {
   try {
-    // 1. Host challengeBrowser context (SkyStream / Webview bridge)
-    if (
-      typeof challengeBrowser !== "undefined" &&
-      challengeBrowser &&
-      typeof challengeBrowser.execute === "function"
-    ) {
-      try {
-        const response = await challengeBrowser.execute(url, {
-          method: "GET",
-          headers: { "User-Agent": BROWSER_UA },
-          evaluateJs: "document.documentElement.outerHTML",
-          waitForSelector: "body",
-        });
-        if (response && response.result) {
-          return response.result;
-        }
-      } catch (cbErr) {
-        console.warn("[FlyStream] challengeBrowser error, falling back to fetch:", cbErr.message || cbErr);
-      }
-    }
-
-    // 2. Direct HTTP fetch fallback
-    const res = await fetch(url, {
-      method: "GET",
-      headers: HEADERS,
-      cache: "no-store",
-    });
-
-    if (res.status === 403 || res.status === 401) {
-      console.warn(`[FlyStream] Endpoint gated (${res.status}) on ${url}`);
-      return null;
-    }
-
-    if (!res.ok) {
-      return null;
-    }
-
-    return await res.text();
+    return await withTimeout(loadPage(url), PAGE_TIMEOUT_MS, "FlyStream page");
   } catch (err) {
     console.error("[FlyStream] fetchPageDOM failed:", err.message || err);
     return null;
   }
+}
+
+// Loads one page: host challengeBrowser first when present, else a plain fetch.
+async function loadPage(url) {
+  // 1. Host challengeBrowser context (SkyStream / Webview bridge)
+  if (
+    typeof challengeBrowser !== "undefined" &&
+    challengeBrowser &&
+    typeof challengeBrowser.execute === "function"
+  ) {
+    try {
+      const response = await challengeBrowser.execute(url, {
+        method: "GET",
+        headers: { "User-Agent": BROWSER_UA },
+        evaluateJs: "document.documentElement.outerHTML",
+        waitForSelector: "body",
+      });
+      if (response && response.result) {
+        return response.result;
+      }
+    } catch (cbErr) {
+      console.warn("[FlyStream] challengeBrowser error, falling back to fetch:", cbErr.message || cbErr);
+    }
+  }
+
+  // 2. Direct HTTP fetch fallback
+  const res = await fetch(url, {
+    method: "GET",
+    headers: HEADERS,
+    cache: "no-store",
+  });
+
+  if (res.status === 403 || res.status === 401) {
+    console.warn(`[FlyStream] Endpoint gated (${res.status}) on ${url}`);
+    return null;
+  }
+
+  if (!res.ok) {
+    return null;
+  }
+
+  return await res.text();
 }
 
 /**
@@ -177,9 +187,7 @@ async function getStreams(tmdbId, mediaType = "movie", season = 1, episode = 1) 
   const cacheKey = `${normType}:${tmdbId}:${season}:${episode}`;
 
   const cached = streamCache.get(cacheKey);
-  if (cached && cached.expiresAt > Date.now()) {
-    return cached.streams;
-  }
+  if (cached) return cached;
 
   try {
     const targetUrl =
@@ -189,6 +197,7 @@ async function getStreams(tmdbId, mediaType = "movie", season = 1, episode = 1) 
 
     const htmlContent = await fetchPageDOM(targetUrl);
     if (!htmlContent) {
+      streamCache.set(cacheKey, [], EMPTY_TTL_MS);
       return [];
     }
 
@@ -208,20 +217,9 @@ async function getStreams(tmdbId, mediaType = "movie", season = 1, episode = 1) 
             seenUrls.add(streamUrl);
 
             const q = source.quality || "Auto";
-            streams.push({
-              name: `FlyStream - ${source.label || q}`,
-              title: `${title} - ${source.label || "HighSpeed"} (${q})`,
-              url: streamUrl,
-              quality: q,
-              headers: STREAM_HEADERS,
-              behaviorHints: {
-                notWebReady: true,
-                proxyHeaders: {
-                  request: STREAM_HEADERS,
-                },
-              },
-              subtitles: [],
-            });
+            streams.push(
+              buildStream(`FlyStream - ${source.label || q}`, `${title} - ${source.label || "HighSpeed"} (${q})`, streamUrl, q)
+            );
           }
         }
       } catch (e) {
@@ -239,20 +237,8 @@ async function getStreams(tmdbId, mediaType = "movie", season = 1, episode = 1) 
       if (seenUrls.has(streamUrl)) continue;
       seenUrls.add(streamUrl);
 
-      streams.push({
-        name: `FlyStream - Mirror #${mirrorIndex}`,
-        title: `${title} - Mirror #${mirrorIndex++}`,
-        url: streamUrl,
-        quality: "Auto",
-        headers: STREAM_HEADERS,
-        behaviorHints: {
-          notWebReady: true,
-          proxyHeaders: {
-            request: STREAM_HEADERS,
-          },
-        },
-        subtitles: [],
-      });
+      streams.push(buildStream(`FlyStream - Mirror #${mirrorIndex}`, `${title} - Mirror #${mirrorIndex}`, streamUrl, "Auto"));
+      mirrorIndex++;
     }
 
     // 3. Extract direct HLS (.m3u8) or MP4 video streams if exposed in DOM
@@ -267,33 +253,12 @@ async function getStreams(tmdbId, mediaType = "movie", season = 1, episode = 1) 
       const is720 = /720p/i.test(streamUrl);
       const q = is4k ? "4K" : is1080 ? "1080p" : is720 ? "720p" : "Auto";
 
-      streams.push({
-        name: `FlyStream - ${q}`,
-        title: `${title} - Direct (${q})`,
-        url: streamUrl,
-        quality: q,
-        headers: STREAM_HEADERS,
-        behaviorHints: {
-          notWebReady: true,
-          proxyHeaders: {
-            request: STREAM_HEADERS,
-          },
-        },
-        subtitles: [],
-      });
+      streams.push(buildStream(`FlyStream - ${q}`, `${title} - Direct (${q})`, streamUrl, q));
     }
 
     // Sort streams by quality descending
-    streams.sort(
-      (a, b) => (QUALITY_ORDER[b.quality] || -1) - (QUALITY_ORDER[a.quality] || -1)
-    );
-
-    if (streams.length > 0) {
-      setBoundedCache(streamCache, cacheKey, {
-        expiresAt: Date.now() + CACHE_TTL_MS,
-        streams,
-      });
-    }
+    sortByQuality(streams);
+    streamCache.set(cacheKey, streams, streams.length ? CACHE_TTL_MS : EMPTY_TTL_MS);
 
     return streams;
   } catch (err) {

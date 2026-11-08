@@ -1,51 +1,70 @@
+/**
+ * FlyStream provider tests, fully offline: `fetch` is stubbed, so this never contacts
+ * flystream.net. The previous version called the live site and only checked stream shape
+ * `if (streams.length > 0)`, so it passed while returning zero streams.
+ * Run: node test-flystream.js
+ */
 const assert = require("assert");
+
+let fetchCalls = 0;
+let mode = "gated";
+global.fetch = async () => {
+  fetchCalls++;
+  if (mode === "gated") return { ok: false, status: 403, text: async () => "" };
+  if (mode === "hang") return new Promise(() => {});
+  return {
+    ok: true,
+    status: 200,
+    text: async () =>
+      '<html><iframe src="//embed.example/e/1"></iframe>' +
+      '<script>var a="https://cdn.example/v/1080p/index.m3u8";var b="https://cdn.example/v/auto.mp4";</script></html>',
+  };
+};
+
 const { getStreams, search, fetchPageDOM } = require("./providers/flystream.js");
 
 async function runTests() {
-  console.log("\n🧪 Running FlyStream Provider Tests...\n");
+  console.log("\n🧪 FlyStream provider tests (offline)\n");
 
-  // 1. Basic export assertions
-  assert.strictEqual(typeof getStreams, "function", "getStreams must be a function");
-  assert.strictEqual(typeof search, "function", "search must be a function");
-  assert.strictEqual(typeof fetchPageDOM, "function", "fetchPageDOM must be a function");
-  console.log("✓ Core functions exported correctly");
+  assert.strictEqual(typeof getStreams, "function");
+  assert.strictEqual(typeof search, "function");
+  assert.strictEqual(typeof fetchPageDOM, "function");
+  assert.deepStrictEqual(await getStreams(null, "movie"), []);
+  assert.deepStrictEqual(await getStreams("", "movie"), []);
+  assert.strictEqual(fetchCalls, 0, "empty ids must not fetch");
+  console.log("✓ exports present; null / empty id returns [] without a request");
 
-  // 2. Handling of invalid / null TMDB IDs
-  const empty1 = await getStreams(null, "movie");
-  assert(Array.isArray(empty1) && empty1.length === 0, "Null TMDB ID must return empty array");
+  // Gated (403) -> [] and the miss is cached: a retrying client does not re-request the page
+  assert.deepStrictEqual(await getStreams("1", "movie"), []);
+  assert.deepStrictEqual(await getStreams("1", "movie"), []);
+  assert.strictEqual(fetchCalls, 1, "a gated miss must be cached");
+  console.log("✓ gated page -> [] and cached (1 request for 2 calls)");
 
-  const empty2 = await getStreams("", "movie");
-  assert(Array.isArray(empty2) && empty2.length === 0, "Empty TMDB ID must return empty array");
-  console.log("✓ Null / empty ID handling returns []");
+  // A stalled page is cut at the 5 s page timeout instead of hanging forever
+  mode = "hang";
+  const t0 = Date.now();
+  assert.deepStrictEqual(await getStreams("2", "movie"), []);
+  const took = Date.now() - t0;
+  assert(took >= 4900 && took < 6500, `stalled page must time out at ~5 s, took ${took} ms`);
+  console.log(`✓ stalled page times out in ${took} ms`);
 
-  // 3. Execution against sample title
-  console.log("== Testing getStreams for Oppenheimer (872585) ==");
-  const streams = await getStreams("872585", "movie");
-  assert(Array.isArray(streams), "Result must always be an array");
-  console.log(`✓ getStreams returned ${streams.length} stream(s)`);
-
-  if (streams.length > 0) {
-    streams.forEach((s) => {
-      assert(s.name, "Stream must have a name");
-      assert(s.url, "Stream must have a url");
-      assert(s.behaviorHints, "Stream must have behaviorHints");
-      assert(s.behaviorHints.proxyHeaders, "Stream must have proxyHeaders");
-      assert.strictEqual(
-        s.behaviorHints.proxyHeaders.request["User-Agent"],
-        "okhttp/4.12.0",
-        "User-Agent in proxyHeaders must be okhttp/4.12.0"
-      );
-    });
-    console.log("✓ Stream behaviorHints and headers verified");
+  // Fixture page: shape, header forwarding, quality order (regression for the refactor)
+  mode = "page";
+  const streams = await getStreams("3", "tv", 1, 2);
+  assert.deepStrictEqual(
+    streams.map((s) => s.quality),
+    ["1080p", "Auto", "Auto"],
+    "1080p first, Auto after (old comparator used || -1)"
+  );
+  assert(streams.some((s) => s.url === "https://embed.example/e/1"), "protocol-relative iframe resolved");
+  for (const s of streams) {
+    assert.strictEqual(s.behaviorHints.notWebReady, true);
+    assert.strictEqual(s.behaviorHints.proxyHeaders.request["User-Agent"], "okhttp/4.12.0");
   }
+  console.log("✓ fixture page parsed, headers forwarded, sorted by quality");
 
-  // 4. Test search handling
-  console.log("== Testing search('Inception') ==");
-  const searchResults = await search("Inception");
-  assert(Array.isArray(searchResults), "Search must return an array");
-  console.log(`✓ Search returned ${searchResults.length} result(s)`);
-
-  console.log("\n🎉 All FlyStream unit tests passed successfully!\n");
+  console.log("\n🎉 FlyStream offline tests passed\n");
+  process.exit(0); // the stubbed hanging fetch never settles
 }
 
 runTests().catch((err) => {

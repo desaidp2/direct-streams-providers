@@ -15,6 +15,9 @@ const UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36";
 const MEDIA_UA = "okhttp/4.12.0";
 
+const { sortByQuality, withTimeout, TtlCache } = require("../shared/provider-utils");
+const { parseMasterPlaylist } = require("./hls-master-playlist-parser");
+
 const VIDLINK_API = "https://vidlink.pro/api/b";
 const ENC_API = "https://enc-dec.app/api/enc-vidlink";
 
@@ -22,17 +25,6 @@ const VIDLINK_HEADERS = {
   "User-Agent": UA,
   Referer: "https://vidlink.pro/",
   Origin: "https://vidlink.pro",
-};
-
-const QUALITY_ORDER = {
-  "4K": 6,
-  "1440p": 5,
-  "1080p": 4,
-  "720p": 3,
-  "480p": 2,
-  "360p": 1,
-  Auto: 0,
-  Unknown: -1,
 };
 
 const LANG_CODES = {
@@ -58,48 +50,48 @@ const LANG_CODES = {
   thai: "th",
 };
 
-// Bounded LRU/FIFO in-memory caches to optimize time complexity O(network) -> O(1)
+// Bounded LRU caches with TTL: a repeat lookup costs O(1) instead of 2-3 network round trips.
 const MAX_CACHE_SIZE = 100;
-const encCache = new Map();
-const streamCache = new Map();
 const CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutes (well inside CDN signature window)
+// A title with no sources is remembered briefly so a retrying client does not re-run the chain.
+const EMPTY_TTL_MS = 2 * 60 * 1000;
+const REQUEST_TIMEOUT_MS = 4000;
+const encCache = new TtlCache(MAX_CACHE_SIZE, 6 * 60 * 60 * 1000);
+const streamCache = new TtlCache(MAX_CACHE_SIZE, CACHE_TTL_MS);
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-// Bounded cache insertion with FIFO eviction
-function setBoundedCache(map, key, value, limit = MAX_CACHE_SIZE) {
-  if (map.size >= limit) {
-    const oldestKey = map.keys().next().value;
-    map.delete(oldestKey);
-  }
-  map.set(key, value);
-}
+const RETRYABLE_STATUS = { 429: true, 492: true, 503: true };
 
-// Resilient HTTP fetcher with exponential backoff & jitter for 429/492 rate-limits
+// Resilient HTTP fetcher with exponential backoff & jitter for 429/492/503 and network errors.
+// Any other HTTP status (404 for a missing title, 400, 403) fails at once: the old loop threw
+// inside its own try and so retried every 404 twice, adding ~1.8 s of sleeps to each miss.
 async function fetchWithRetry(url, headers, retries = 2, baseDelay = 600) {
   for (let attempt = 0; attempt <= retries; attempt++) {
+    let res;
     try {
-      const res = await fetch(url, { headers: headers || {} });
-      if (res.ok) return res;
-
-      // Handle HTTP 429, 492 (Too Many Requests / CDN rate limit), or 503
-      if ((res.status === 429 || res.status === 492 || res.status === 503) && attempt < retries) {
-        const retryAfter = res.headers && typeof res.headers.get === "function"
-          ? res.headers.get("retry-after")
-          : null;
-        const delayMs = retryAfter
-          ? Math.min(parseInt(retryAfter, 10) * 1000 || baseDelay, 4000)
-          : baseDelay * Math.pow(2, attempt) + Math.random() * 200;
-        await sleep(delayMs);
-        continue;
-      }
-      throw new Error("HTTP " + res.status + " for " + url);
+      res = await withTimeout(fetch(url, { headers: headers || {} }), REQUEST_TIMEOUT_MS, "7Movies fetch");
     } catch (err) {
       if (attempt >= retries) throw err;
       await sleep(baseDelay * Math.pow(2, attempt) + Math.random() * 200);
+      continue;
     }
+    if (res.ok) return res;
+
+    // Handle HTTP 429, 492 (Too Many Requests / CDN rate limit), or 503
+    if (RETRYABLE_STATUS[res.status] && attempt < retries) {
+      const retryAfter = res.headers && typeof res.headers.get === "function"
+        ? res.headers.get("retry-after")
+        : null;
+      const delayMs = retryAfter
+        ? Math.min(parseInt(retryAfter, 10) * 1000 || baseDelay, 4000)
+        : baseDelay * Math.pow(2, attempt) + Math.random() * 200;
+      await sleep(delayMs);
+      continue;
+    }
+    throw new Error("HTTP " + res.status + " for " + url);
   }
 }
 
@@ -183,31 +175,16 @@ function playbackHeaders(qualityData, streamData) {
   return h;
 }
 
-function resolveAgainst(url, base) {
-  if (!url || url.startsWith("http")) return url;
-  try {
-    return new URL(url, base).toString();
-  } catch (e) {
-    return url;
-  }
-}
-
-// O(1) auxiliary space streaming HLS master playlist parser.
-// Avoids splitting multi-megabyte strings into arrays to prevent GC stalls in QuickJS/Hermes.
+// Expands an HLS master playlist into one stream per variant (parser: hls-master-playlist-parser.js).
 async function expandPlaylist(playlistUrl, headers, subtitles, title) {
   try {
     const text = await fetchText(playlistUrl, headers);
+    const parsed = parseMasterPlaylist(text, playlistUrl);
     const variants = [];
-    
-    // Single-pass regex scan over the playlist
-    const streamInfRegex = /#EXT-X-STREAM-INF:[^\n]*?(?:RESOLUTION=(\d+)x(\d+))?[^\n]*\n([^\s#]+)/g;
-    let match;
 
-    while ((match = streamInfRegex.exec(text)) !== null) {
-      const height = match[2] ? parseInt(match[2], 10) : null;
-      const lineUrl = match[3].trim();
-      const resolvedUrl = resolveAgainst(lineUrl, playlistUrl);
-      const q = height ? qualityLabel(String(height)) : "Auto";
+    for (let i = 0; i < parsed.length; i++) {
+      const resolvedUrl = parsed[i].url;
+      const q = parsed[i].height ? qualityLabel(String(parsed[i].height)) : "Auto";
 
       variants.push({
         name: "7Movies - " + q,
@@ -258,11 +235,9 @@ async function getStreams(tmdbId, mediaType, season, episode) {
     const ep = normType === "tv" ? Math.max(1, parseInt(episode, 10) || 1) : null;
     const cacheKey = normType === "tv" ? `${cleanId}:${s}:${ep}` : cleanId;
 
-    // Fast-path: check in-memory cache O(1)
+    // Fast-path: check in-memory cache O(1) (an empty array is a remembered miss)
     const cached = streamCache.get(cacheKey);
-    if (cached && cached.expiresAt > Date.now()) {
-      return cached.streams;
-    }
+    if (cached) return cached;
 
     // Step 1: Encrypt TMDB id with O(1) caching
     let encHash = encCache.get(cleanId);
@@ -272,7 +247,7 @@ async function getStreams(tmdbId, mediaType, season, episode) {
       });
       if (!enc || !enc.result) return [];
       encHash = enc.result;
-      setBoundedCache(encCache, cleanId, encHash);
+      encCache.set(cleanId, encHash);
     }
 
     // Step 2: Query upstream VidLink JSON API
@@ -280,8 +255,19 @@ async function getStreams(tmdbId, mediaType, season, episode) {
       ? `${VIDLINK_API}/tv/${encHash}/${s}/${ep}`
       : `${VIDLINK_API}/movie/${encHash}`;
 
-    const data = await fetchJson(apiUrl, VIDLINK_HEADERS);
-    if (!data || !data.stream) return [];
+    let data;
+    try {
+      data = await fetchJson(apiUrl, VIDLINK_HEADERS);
+    } catch (e) {
+      // A definitive HTTP answer (e.g. 404: title not on VidLink) is a miss worth remembering;
+      // timeouts and network errors are not, so the next request tries again.
+      if (/^HTTP \d+/.test(e.message || "")) streamCache.set(cacheKey, [], EMPTY_TTL_MS);
+      throw e;
+    }
+    if (!data || !data.stream) {
+      streamCache.set(cacheKey, [], EMPTY_TTL_MS);
+      return [];
+    }
 
     const stream = data.stream;
     const subtitles = mapSubtitles(stream.captions || data.captions);
@@ -333,17 +319,10 @@ async function getStreams(tmdbId, mediaType, season, episode) {
     }
 
     // Step 5: Sort by quality descending
-    streams.sort(
-      (a, b) => (QUALITY_ORDER[b.quality] || -2) - (QUALITY_ORDER[a.quality] || -2)
-    );
+    sortByQuality(streams);
 
-    // Cache the result for 10 minutes
-    if (streams.length > 0) {
-      setBoundedCache(streamCache, cacheKey, {
-        expiresAt: Date.now() + CACHE_TTL_MS,
-        streams: streams,
-      });
-    }
+    // Cache the result for 10 minutes (a miss for 2)
+    streamCache.set(cacheKey, streams, streams.length ? CACHE_TTL_MS : EMPTY_TTL_MS);
 
     return streams;
   } catch (e) {

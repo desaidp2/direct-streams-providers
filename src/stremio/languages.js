@@ -97,9 +97,24 @@ const NAME_TO_CODE = {
   farsi: "fas",
 };
 
+// Memo for toIso6392: the name lookup below is a linear scan with substring matching
+// (O(N x L) per call); real inputs repeat a few dozen labels, so a hit is O(1).
+const ISO_MEMO = new Map();
+const MAX_ISO_MEMO = 512;
+
 function toIso6392(input) {
   if (!input) return "eng";
-  const s = String(input).trim().toLowerCase();
+  const key = String(input);
+  const hit = ISO_MEMO.get(key);
+  if (hit) return hit;
+  const code = lookupIso6392(key);
+  if (ISO_MEMO.size >= MAX_ISO_MEMO) ISO_MEMO.delete(ISO_MEMO.keys().next().value);
+  ISO_MEMO.set(key, code);
+  return code;
+}
+
+function lookupIso6392(input) {
+  const s = input.trim().toLowerCase();
 
   // If already 3 letters, return directly
   if (/^[a-z]{3}$/.test(s)) return s;

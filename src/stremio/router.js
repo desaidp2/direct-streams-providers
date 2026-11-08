@@ -15,6 +15,8 @@ const { toIso6392 } = require("./languages");
 const { getStreams: get7MoviesStreams } = require("../7movies/index");
 const { getStreams: getMovyStreams, fetchSubtitles: fetchMovySubtitles } = require("../movy/index");
 const { getStreams: getFlyStreamStreams } = require("../flystream/index");
+const { CORS_HEADERS } = require("./http-constants");
+const { handleSubtitleProxy } = require("./subtitle-proxy");
 
 const MANIFEST = {
   id: "community.directstreamsproviders",
@@ -31,15 +33,36 @@ const MANIFEST = {
   },
 };
 
-const CORS_HEADERS = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "*",
-  "Access-Control-Allow-Methods": "GET, HEAD, OPTIONS",
-  "Content-Type": "application/json; charset=utf-8",
-};
+// Output order: Movy first (often up to 4K), then 7Movies MP4s, then FlyStream.
+const PROVIDERS = [
+  { tag: "Movy", getStreams: getMovyStreams },
+  { tag: "7Movies", getStreams: get7MoviesStreams },
+  { tag: "FlyStream", getStreams: getFlyStreamStreams },
+];
 
-const SUBTITLE_CACHE = new Map();
-const MAX_SUB_CACHE = 100;
+// Each provider gets this long; a late provider is dropped from the response instead of
+// holding it open. Response time is bounded by max(deadline), not by the slowest upstream.
+const envDeadline =
+  typeof process !== "undefined" && process.env ? parseInt(process.env.PROVIDER_DEADLINE_MS || "", 10) : NaN;
+const PROVIDER_DEADLINE_MS = envDeadline > 0 ? envDeadline : 9000;
+
+// Identical concurrent stream requests (players often fire the same one 2-3 times while the
+// sheet opens) share one resolution: k duplicates cost 1 x P provider calls, not k x P.
+const inflightStreams = new Map();
+
+function withDeadline(promise, ms, tag) {
+  let timer;
+  const deadline = new Promise((resolve) => {
+    timer = setTimeout(() => {
+      console.warn(`[StremioRouter] ${tag} missed the ${ms}ms deadline, skipped`);
+      resolve([]);
+    }, ms);
+  });
+  return Promise.race([Promise.resolve(promise).catch(() => []), deadline]).then((value) => {
+    clearTimeout(timer);
+    return value;
+  });
+}
 
 /**
  * Parses raw Stremio id (e.g. "tt0468569", "tt0903747:1:1", "tmdb:1396:2:3")
@@ -74,21 +97,34 @@ function formatSubtitleUrl(url, baseUrl) {
   return `${baseUrl}/subtitles/file.srt?url=${encodeURIComponent(url)}`;
 }
 
+// Maps provider subtitle tracks to Stremio subtitle objects (ISO 639-2 + .srt bridge)
+function mapSubtitles(rawSubs, baseUrl) {
+  return rawSubs.map((sub, idx) => {
+    const langCode = toIso6392(sub.language || sub.lang || sub.name);
+    return {
+      id: `${langCode}_${idx}`,
+      url: formatSubtitleUrl(sub.url, baseUrl),
+      lang: langCode,
+      name: sub.name || sub.display || langCode,
+    };
+  });
+}
+
 /**
- * Transforms internal provider streams to Stremio Stream objects
+ * Transforms internal provider streams to Stremio Stream objects.
+ * Providers attach one shared subtitle array to all their streams; `subMemo` (one per
+ * response) maps each distinct array once, so S streams x T subtitles cost O(S + T)
+ * instead of O(S x T) mapping work and allocations.
  */
-function toStremioStream(s, providerTag, baseUrl) {
-  const subtitles = Array.isArray(s.subtitles)
-    ? s.subtitles.map((sub, idx) => {
-        const langCode = toIso6392(sub.language || sub.lang || sub.name);
-        return {
-          id: `${langCode}_${idx}`,
-          url: formatSubtitleUrl(sub.url, baseUrl),
-          lang: langCode,
-          name: sub.name || sub.display || langCode,
-        };
-      })
-    : [];
+function toStremioStream(s, providerTag, baseUrl, subMemo) {
+  let subtitles = [];
+  if (Array.isArray(s.subtitles)) {
+    subtitles = subMemo ? subMemo.get(s.subtitles) : undefined;
+    if (!subtitles) {
+      subtitles = mapSubtitles(s.subtitles, baseUrl);
+      if (subMemo) subMemo.set(s.subtitles, subtitles);
+    }
+  }
 
   const subCount = subtitles.length ? ` | 💬 ${subtitles.length} subs` : "";
   const directTag = "⚡ Direct CDN (No Debrid)";
@@ -110,7 +146,16 @@ function toStremioStream(s, providerTag, baseUrl) {
 /**
  * Handles stream requests for /stream/:type/:id.json
  */
-async function handleStreams(type, rawId, baseUrl) {
+function handleStreams(type, rawId, baseUrl) {
+  const key = `${type}|${rawId}|${baseUrl}`;
+  const pending = inflightStreams.get(key);
+  if (pending) return pending;
+  const work = resolveStreams(type, rawId, baseUrl).finally(() => inflightStreams.delete(key));
+  inflightStreams.set(key, work);
+  return work;
+}
+
+async function resolveStreams(type, rawId, baseUrl) {
   try {
     const normType = type === "series" || type === "tv" ? "tv" : "movie";
     const { season, episode } = parseIdParams(rawId);
@@ -120,33 +165,20 @@ async function handleStreams(type, rawId, baseUrl) {
       return { streams: [] };
     }
 
-    // Query all providers in parallel
-    const [sevenMoviesResult, movyResult, flyStreamResult] = await Promise.allSettled([
-      get7MoviesStreams(tmdbId, normType, season, episode),
-      getMovyStreams(tmdbId, normType, season, episode),
-      getFlyStreamStreams(tmdbId, normType, season, episode),
-    ]);
+    // Query all providers in parallel, each bounded by its deadline
+    const results = await Promise.all(
+      PROVIDERS.map((p) =>
+        withDeadline(p.getStreams(tmdbId, normType, season, episode), PROVIDER_DEADLINE_MS, p.tag)
+      )
+    );
 
     const streams = [];
-
-    // 1. Movy streams (often higher resolution up to 4K)
-    if (movyResult.status === "fulfilled" && Array.isArray(movyResult.value)) {
-      for (const s of movyResult.value) {
-        streams.push(toStremioStream(s, "Movy", baseUrl));
-      }
-    }
-
-    // 2. 7Movies streams (direct MP4s)
-    if (sevenMoviesResult.status === "fulfilled" && Array.isArray(sevenMoviesResult.value)) {
-      for (const s of sevenMoviesResult.value) {
-        streams.push(toStremioStream(s, "7Movies", baseUrl));
-      }
-    }
-
-    // 3. FlyStream streams (mirrors and HLS)
-    if (flyStreamResult.status === "fulfilled" && Array.isArray(flyStreamResult.value)) {
-      for (const s of flyStreamResult.value) {
-        streams.push(toStremioStream(s, "FlyStream", baseUrl));
+    const subMemo = new Map();
+    for (let i = 0; i < PROVIDERS.length; i++) {
+      const list = results[i];
+      if (!Array.isArray(list)) continue;
+      for (const s of list) {
+        streams.push(toStremioStream(s, PROVIDERS[i].tag, baseUrl, subMemo));
       }
     }
 
@@ -177,90 +209,12 @@ async function handleSubtitles(type, rawId, baseUrl) {
       rawSubs = [];
     }
 
-    const subtitles = (Array.isArray(rawSubs) ? rawSubs : []).map((sub, idx) => {
-      const langCode = toIso6392(sub.language || sub.lang || sub.name);
-      return {
-        id: `${langCode}_${idx}`,
-        url: formatSubtitleUrl(sub.url, baseUrl),
-        lang: langCode,
-        name: sub.name || sub.display || langCode,
-      };
-    });
+    const subtitles = mapSubtitles(Array.isArray(rawSubs) ? rawSubs : [], baseUrl);
 
     return { subtitles };
   } catch (err) {
     console.error("[StremioRouter] Error resolving subtitles:", err);
     return { subtitles: [] };
-  }
-}
-
-/**
- * Proxies subtitle files with proper application/x-subrip content-type
- */
-async function handleSubtitleProxy(targetUrl) {
-  if (!targetUrl) {
-    return {
-      status: 400,
-      headers: CORS_HEADERS,
-      body: JSON.stringify({ error: "Missing url parameter" }),
-    };
-  }
-
-  // Check cache
-  if (SUBTITLE_CACHE.has(targetUrl)) {
-    return {
-      status: 200,
-      headers: {
-        "Content-Type": "application/x-subrip; charset=utf-8",
-        "Content-Disposition": 'inline; filename="subtitle.srt"',
-        "Access-Control-Allow-Origin": "*",
-      },
-      body: SUBTITLE_CACHE.get(targetUrl),
-    };
-  }
-
-  try {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 6000);
-    const res = await fetch(targetUrl, {
-      signal: controller.signal,
-      headers: {
-        "User-Agent": "okhttp/4.12.0",
-      },
-    });
-    clearTimeout(timer);
-
-    if (!res.ok) {
-      return {
-        status: res.status,
-        headers: CORS_HEADERS,
-        body: JSON.stringify({ error: `Subtitle fetch failed (${res.status})` }),
-      };
-    }
-
-    const text = await res.text();
-
-    if (SUBTITLE_CACHE.size >= MAX_SUB_CACHE) {
-      const firstKey = SUBTITLE_CACHE.keys().next().value;
-      SUBTITLE_CACHE.delete(firstKey);
-    }
-    SUBTITLE_CACHE.set(targetUrl, text);
-
-    return {
-      status: 200,
-      headers: {
-        "Content-Type": "application/x-subrip; charset=utf-8",
-        "Content-Disposition": 'inline; filename="subtitle.srt"',
-        "Access-Control-Allow-Origin": "*",
-      },
-      body: text,
-    };
-  } catch (e) {
-    return {
-      status: 502,
-      headers: CORS_HEADERS,
-      body: JSON.stringify({ error: "Subtitle proxy upstream error" }),
-    };
   }
 }
 
@@ -272,8 +226,13 @@ async function handleSubtitleProxy(targetUrl) {
  * @returns {Promise<{ status: number, headers: object, body: string }>}
  */
 async function route(path, query = {}, baseUrl = "") {
-  // Strip trailing slashes and decode
-  const cleanPath = decodeURIComponent(path.replace(/\/+$/, "") || "/");
+  // Strip trailing slashes and decode (a malformed %-escape is a client error, not a 500)
+  let cleanPath;
+  try {
+    cleanPath = decodeURIComponent(path.replace(/\/+$/, "") || "/");
+  } catch (e) {
+    return { status: 400, headers: CORS_HEADERS, body: JSON.stringify({ error: "Malformed path" }) };
+  }
 
   // Route 1: Root or manifest
   if (cleanPath === "" || cleanPath === "/" || cleanPath === "/manifest.json") {

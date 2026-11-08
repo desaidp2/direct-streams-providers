@@ -43,7 +43,9 @@ function getProvidersToBuild() {
 
     return fs.readdirSync(srcDir, { withFileTypes: true })
         .filter(d => d.isDirectory())
-        .map(d => d.name);
+        .map(d => d.name)
+        // shared/ holds helpers bundled into each provider, it is not a provider itself
+        .filter(name => fs.existsSync(path.join(srcDir, name, 'index.js')));
 }
 
 async function buildProvider(providerName) {

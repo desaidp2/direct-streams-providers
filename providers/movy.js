@@ -1,7 +1,11 @@
 /**
  * movy - Built from src/movy/
- * Generated: 2026-11-08T04:38:51.582Z
+ * Generated: 2026-11-08T05:31:17.685Z
  */
+var __getOwnPropNames = Object.getOwnPropertyNames;
+var __commonJS = (cb, mod) => function __require() {
+  return mod || (0, cb[__getOwnPropNames(cb)[0]])((mod = { exports: {} }).exports, mod), mod.exports;
+};
 var __async = (__this, __arguments, generator) => {
   return new Promise((resolve, reject) => {
     var fulfilled = (value) => {
@@ -23,6 +27,228 @@ var __async = (__this, __arguments, generator) => {
   });
 };
 
+// src/movy/mvm1-byte-codecs.js
+var require_mvm1_byte_codecs = __commonJS({
+  "src/movy/mvm1-byte-codecs.js"(exports2, module2) {
+    var MAGIC = [109, 118, 109, 49];
+    var B64_LOOKUP = function() {
+      const t = new Int8Array(128).fill(-1);
+      const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+      for (let i = 0; i < chars.length; i++)
+        t[chars.charCodeAt(i)] = i;
+      t[45] = 62;
+      t[95] = 63;
+      return t;
+    }();
+    function mix(e) {
+      e = e >>> 0;
+      e ^= e >>> 16;
+      e = Math.imul(e, 2246822507) >>> 0;
+      e ^= e >>> 13;
+      e = Math.imul(e, 3266489909) >>> 0;
+      return (e ^ e >>> 16) >>> 0;
+    }
+    function rotl(e, a) {
+      e = e >>> 0;
+      a &= 31;
+      return a === 0 ? e : (e << a | e >>> 32 - a) >>> 0;
+    }
+    function b64decode(str) {
+      str = String(str || "");
+      const out = new Uint8Array(Math.floor(str.length * 3 / 4));
+      let o = 0;
+      let buf = 0;
+      let bits = 0;
+      for (let i = 0; i < str.length; i++) {
+        const c = str.charCodeAt(i);
+        const v = c < 128 ? B64_LOOKUP[c] : -1;
+        if (v < 0)
+          continue;
+        buf = buf << 6 | v;
+        bits += 6;
+        if (bits >= 8) {
+          bits -= 8;
+          out[o++] = buf >> bits & 255;
+          buf &= (1 << bits) - 1;
+        }
+      }
+      return out.subarray(0, o);
+    }
+    var UTF8_CHUNK = 8192;
+    function utf8decode(bytes) {
+      const parts = [];
+      const units = new Uint16Array(UTF8_CHUNK + 1);
+      let k = 0;
+      let i = 0;
+      while (i < bytes.length) {
+        const c = bytes[i++];
+        let cp;
+        if (c < 128) {
+          cp = c;
+        } else if (c < 224) {
+          cp = (c & 31) << 6 | bytes[i++] & 63;
+        } else if (c < 240) {
+          cp = (c & 15) << 12 | (bytes[i++] & 63) << 6 | bytes[i++] & 63;
+        } else {
+          cp = (c & 7) << 18 | (bytes[i++] & 63) << 12 | (bytes[i++] & 63) << 6 | bytes[i++] & 63;
+        }
+        if (cp > 65535) {
+          cp -= 65536;
+          units[k++] = 55296 + (cp >> 10);
+          units[k++] = 56320 + (cp & 1023);
+        } else {
+          units[k++] = cp;
+        }
+        if (k >= UTF8_CHUNK) {
+          parts.push(String.fromCharCode.apply(null, units.subarray(0, k)));
+          k = 0;
+        }
+      }
+      if (k)
+        parts.push(String.fromCharCode.apply(null, units.subarray(0, k)));
+      return parts.join("");
+    }
+    function initState(seed, mediaId) {
+      let fnv = 2166136261;
+      for (let t = 0; t < seed.length; t++) {
+        fnv = Math.imul(fnv ^ seed.charCodeAt(t), 16777619) >>> 0;
+      }
+      const S = new Uint32Array(61);
+      const used = new Uint8Array(61);
+      let n = mix((mix(fnv) ^ mix((Number(mediaId) >>> 0 ^ 2654435769) >>> 0)) >>> 0) >>> 0;
+      for (let e = 0; e < 8; e++) {
+        const a = n % 61;
+        n = rotl(n + 2654435769 >>> 0, 7 + (7 & e));
+        S[a] = (n ^ mix(n)) >>> 0;
+        used[a] = 1;
+        n = mix(n + a >>> 0);
+      }
+      return { S, used, acc: mix(2779096485 ^ n) >>> 0 };
+    }
+    function keystream(seed, mediaId, len) {
+      const st = initState(seed, mediaId);
+      const S = st.S;
+      const used = st.used;
+      let acc = st.acc;
+      const out = new Uint8Array(len);
+      let counter = 0;
+      for (let e = 0; e < len; ) {
+        const dd = acc % 61;
+        const negIn = used[dd] ? -1 : 0;
+        const r = S[dd] >>> 0;
+        const cc = Math.imul(2654435769, counter + 1) >>> 0;
+        const nn = (r ^ cc) >>> 0;
+        let b = ((acc ^ nn) >>> 0 | (acc & nn & negIn) >>> 0) >>> 0;
+        b = (rotl(b + acc >>> 0, 31 & dd) ^ rotl(acc, 31 & Math.imul(dd, 7))) >>> 0;
+        acc = mix(b + 2654435769 >>> 0);
+        S[dd] = acc >>> 0;
+        used[dd] = 1;
+        const word = acc >>> 0;
+        counter++;
+        out[e++] = 255 & word;
+        if (e < len)
+          out[e++] = word >>> 8 & 255;
+        if (e < len)
+          out[e++] = word >>> 16 & 255;
+        if (e < len)
+          out[e++] = word >>> 24 & 255;
+      }
+      return out;
+    }
+    function decryptSources2(payloadText, seed, mediaId) {
+      const cleanText = String(payloadText || "").replace(/^\s*"|"\s*$/g, "").trim();
+      const data = b64decode(cleanText);
+      const ks = keystream(seed, Number(mediaId), data.length);
+      for (let j = 0; j < data.length; j++)
+        data[j] ^= ks[j];
+      for (let j = 0; j < MAGIC.length; j++) {
+        if (data[j] !== MAGIC[j])
+          throw new Error("mvm1 magic mismatch");
+      }
+      return utf8decode(data.subarray(MAGIC.length));
+    }
+    module2.exports = { b64decode, utf8decode, keystream, decryptSources: decryptSources2 };
+  }
+});
+
+// src/shared/provider-utils.js
+var require_provider_utils = __commonJS({
+  "src/shared/provider-utils.js"(exports2, module2) {
+    var QUALITY_ORDER = {
+      "4K": 6,
+      "1440p": 5,
+      "1080p": 4,
+      "720p": 3,
+      "480p": 2,
+      "360p": 1,
+      Auto: 0,
+      Unknown: -1
+    };
+    function qualityRank(quality) {
+      return Object.prototype.hasOwnProperty.call(QUALITY_ORDER, quality) ? QUALITY_ORDER[quality] : -2;
+    }
+    function sortByQuality2(streams) {
+      return streams.sort((a, b) => qualityRank(b.quality) - qualityRank(a.quality));
+    }
+    function withTimeout2(promise, ms, label) {
+      if (typeof setTimeout !== "function")
+        return promise;
+      let timer;
+      const timeoutPromise = new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error((label || "Timeout") + " " + ms + "ms")), ms);
+      });
+      return Promise.race([promise, timeoutPromise]).then(
+        (value) => {
+          if (typeof clearTimeout === "function")
+            clearTimeout(timer);
+          return value;
+        },
+        (err) => {
+          if (typeof clearTimeout === "function")
+            clearTimeout(timer);
+          throw err;
+        }
+      );
+    }
+    var TtlCache2 = class {
+      constructor(limit, defaultTtlMs) {
+        this.limit = limit;
+        this.defaultTtlMs = defaultTtlMs;
+        this.map = /* @__PURE__ */ new Map();
+      }
+      get(key) {
+        const entry = this.map.get(key);
+        if (!entry)
+          return void 0;
+        if (entry.expiresAt <= Date.now()) {
+          this.map.delete(key);
+          return void 0;
+        }
+        this.map.delete(key);
+        this.map.set(key, entry);
+        return entry.value;
+      }
+      has(key) {
+        return this.get(key) !== void 0;
+      }
+      set(key, value, ttlMs) {
+        if (this.map.has(key))
+          this.map.delete(key);
+        else if (this.map.size >= this.limit)
+          this.map.delete(this.map.keys().next().value);
+        this.map.set(key, { value, expiresAt: Date.now() + (ttlMs || this.defaultTtlMs) });
+      }
+      delete(key) {
+        this.map.delete(key);
+      }
+      get size() {
+        return this.map.size;
+      }
+    };
+    module2.exports = { QUALITY_ORDER, qualityRank, sortByQuality: sortByQuality2, withTimeout: withTimeout2, TtlCache: TtlCache2 };
+  }
+});
+
 // src/movy/index.js
 var BROWSER_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
 var MEDIA_UA = "okhttp/4.12.0";
@@ -41,144 +267,10 @@ var STREAM_HEADERS = {
 };
 var PRIMARY_SERVERS = ["miami", "boise"];
 var SECONDARY_SERVERS = ["atlanta", "phoenix", "dallas"];
-var QUALITY_ORDER = {
-  "4K": 6,
-  "1440p": 5,
-  "1080p": 4,
-  "720p": 3,
-  "480p": 2,
-  "360p": 1,
-  Auto: 0,
-  Unknown: -1
-};
-var MAGIC = [109, 118, 109, 49];
-var B64_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-function mix(e) {
-  e = e >>> 0;
-  e ^= e >>> 16;
-  e = Math.imul(e, 2246822507) >>> 0;
-  e ^= e >>> 13;
-  e = Math.imul(e, 3266489909) >>> 0;
-  return (e ^ e >>> 16) >>> 0;
-}
-function rotl(e, a) {
-  e = e >>> 0;
-  a &= 31;
-  return a === 0 ? e : (e << a | e >>> 32 - a) >>> 0;
-}
-function b64decode(str) {
-  str = String(str || "").replace(/-/g, "+").replace(/_/g, "/").replace(/[^A-Za-z0-9+/]/g, "");
-  const out = [];
-  let buf = 0;
-  let bits = 0;
-  for (let i = 0; i < str.length; i++) {
-    buf = buf << 6 | B64_CHARS.indexOf(str.charAt(i));
-    bits += 6;
-    if (bits >= 8) {
-      bits -= 8;
-      out.push(buf >> bits & 255);
-      buf &= (1 << bits) - 1;
-    }
-  }
-  return new Uint8Array(out);
-}
-function utf8decode(bytes) {
-  let s = "";
-  let i = 0;
-  while (i < bytes.length) {
-    const c = bytes[i++];
-    let cp;
-    if (c < 128) {
-      cp = c;
-    } else if (c < 224) {
-      cp = (c & 31) << 6 | bytes[i++] & 63;
-    } else if (c < 240) {
-      cp = (c & 15) << 12 | (bytes[i++] & 63) << 6 | bytes[i++] & 63;
-    } else {
-      cp = (c & 7) << 18 | (bytes[i++] & 63) << 12 | (bytes[i++] & 63) << 6 | bytes[i++] & 63;
-    }
-    if (cp > 65535) {
-      cp -= 65536;
-      s += String.fromCharCode(55296 + (cp >> 10), 56320 + (cp & 1023));
-    } else {
-      s += String.fromCharCode(cp);
-    }
-  }
-  return s;
-}
-function initState(seed, mediaId) {
-  let fnv = 2166136261;
-  for (let t = 0; t < seed.length; t++) {
-    fnv = Math.imul(fnv ^ seed.charCodeAt(t), 16777619) >>> 0;
-  }
-  const S = new Uint32Array(61);
-  const used = new Uint8Array(61);
-  let n = mix((mix(fnv) ^ mix((Number(mediaId) >>> 0 ^ 2654435769) >>> 0)) >>> 0) >>> 0;
-  for (let e = 0; e < 8; e++) {
-    const a = n % 61;
-    n = rotl(n + 2654435769 >>> 0, 7 + (7 & e));
-    S[a] = (n ^ mix(n)) >>> 0;
-    used[a] = 1;
-    n = mix(n + a >>> 0);
-  }
-  return { S, used, acc: mix(2779096485 ^ n) >>> 0 };
-}
-function keystream(seed, mediaId, len) {
-  const st = initState(seed, mediaId);
-  const S = st.S;
-  const used = st.used;
-  let acc = st.acc;
-  const out = new Uint8Array(len);
-  let counter = 0;
-  for (let e = 0; e < len; ) {
-    const dd = acc % 61;
-    const negIn = used[dd] ? -1 : 0;
-    const r = S[dd] >>> 0;
-    const cc = Math.imul(2654435769, counter + 1) >>> 0;
-    const nn = (r ^ cc) >>> 0;
-    let b = ((acc ^ nn) >>> 0 | (acc & nn & negIn) >>> 0) >>> 0;
-    b = (rotl(b + acc >>> 0, 31 & dd) ^ rotl(acc, 31 & Math.imul(dd, 7))) >>> 0;
-    acc = mix(b + 2654435769 >>> 0);
-    S[dd] = acc >>> 0;
-    used[dd] = 1;
-    const word = acc >>> 0;
-    counter++;
-    out[e++] = 255 & word;
-    if (e < len)
-      out[e++] = word >>> 8 & 255;
-    if (e < len)
-      out[e++] = word >>> 16 & 255;
-    if (e < len)
-      out[e++] = word >>> 24 & 255;
-  }
-  return out;
-}
-function decryptSources(payloadText, seed, mediaId) {
-  const cleanText = String(payloadText || "").replace(/^\s*"|"\s*$/g, "").trim();
-  const data = b64decode(cleanText);
-  const ks = keystream(seed, Number(mediaId), data.length);
-  for (let j = 0; j < data.length; j++)
-    data[j] ^= ks[j];
-  for (let j = 0; j < MAGIC.length; j++) {
-    if (data[j] !== MAGIC[j])
-      throw new Error("mvm1 magic mismatch");
-  }
-  return utf8decode(data.subarray(MAGIC.length));
-}
+var { decryptSources } = require_mvm1_byte_codecs();
+var { sortByQuality, withTimeout, TtlCache } = require_provider_utils();
 function timeout(promise, ms = 3500) {
-  if (typeof setTimeout !== "function")
-    return promise;
-  let timer;
-  const timeoutPromise = new Promise((_, reject) => {
-    timer = setTimeout(() => reject(new Error("Timeout " + ms + "ms")), ms);
-  });
-  return Promise.race([
-    promise.finally(() => {
-      if (typeof clearTimeout === "function")
-        clearTimeout(timer);
-    }),
-    timeoutPromise
-  ]);
+  return withTimeout(promise, ms, "Movy timeout");
 }
 function buildQuery(params) {
   const parts = [];
@@ -190,12 +282,20 @@ function buildQuery(params) {
   }
   return parts.join("&");
 }
-var seedCache = /* @__PURE__ */ new Map();
+var MAX_CACHE_SIZE = 100;
+var seedCache = new TtlCache(MAX_CACHE_SIZE, 3e4);
+var STREAM_TTL_MS = 10 * 60 * 1e3;
+var EMPTY_TTL_MS = 2 * 60 * 1e3;
+var UNCERTAIN_EMPTY_TTL_MS = 30 * 1e3;
+var streamCache = new TtlCache(MAX_CACHE_SIZE, STREAM_TTL_MS);
+function isTimeout(result) {
+  return result.status === "rejected" && /timeout/i.test(String(result.reason && result.reason.message || ""));
+}
 function getSeed(mediaId) {
   return __async(this, null, function* () {
     const hit = seedCache.get(mediaId);
-    if (hit && hit.expiresAt - 5e3 > Date.now())
-      return hit.seed;
+    if (hit)
+      return hit;
     const res = yield timeout(
       fetch(API + "/seed?mediaId=" + encodeURIComponent(mediaId), {
         headers: API_HEADERS
@@ -205,10 +305,7 @@ function getSeed(mediaId) {
     if (!res.ok)
       throw new Error("seed HTTP " + res.status);
     const data = yield res.json();
-    seedCache.set(mediaId, {
-      seed: data.seed,
-      expiresAt: Date.now() + (data.ttlMs || 3e4)
-    });
+    seedCache.set(mediaId, data.seed, Math.max(1e3, (data.ttlMs || 3e4) - 5e3));
     return data.seed;
   });
 }
@@ -401,6 +498,10 @@ function getStreams(tmdbId, mediaType, season, episode) {
       const type = mediaType === "tv" ? "tv" : "movie";
       const s = type === "tv" ? Math.max(1, parseInt(season, 10) || 1) : null;
       const ep = type === "tv" ? Math.max(1, parseInt(episode, 10) || 1) : null;
+      const cacheKey = type + ":" + cleanId + ":" + s + ":" + ep;
+      const cached = streamCache.get(cacheKey);
+      if (cached)
+        return cached;
       const seedPromise = getSeed(cleanId);
       const detailPromise = fetchDetailParams(cleanId, type);
       let seed;
@@ -423,6 +524,7 @@ function getStreams(tmdbId, mediaType, season, episode) {
       const streams = [];
       const seenUrls = /* @__PURE__ */ new Set();
       let payloadSubs = [];
+      let sawTimeout = primaryResults.some(isTimeout);
       for (let i = 0; i < PRIMARY_SERVERS.length; i++) {
         const res = primaryResults[i];
         if (res.status === "fulfilled" && res.value) {
@@ -440,6 +542,7 @@ function getStreams(tmdbId, mediaType, season, episode) {
         const secondaryResults = yield Promise.allSettled(
           SECONDARY_SERVERS.map((srv) => fetchServerSources(srv, detailParams, cleanId))
         );
+        sawTimeout = sawTimeout || secondaryResults.some(isTimeout);
         for (let i = 0; i < SECONDARY_SERVERS.length; i++) {
           const res = secondaryResults[i];
           if (res.status === "fulfilled" && res.value) {
@@ -447,17 +550,18 @@ function getStreams(tmdbId, mediaType, season, episode) {
           }
         }
       }
-      if (!streams.length)
+      if (!streams.length) {
+        streamCache.set(cacheKey, [], sawTimeout ? UNCERTAIN_EMPTY_TTL_MS : EMPTY_TTL_MS);
         return [];
+      }
       let subs = payloadSubs;
       if (!subs.length) {
         subs = yield timeout(fetchSubtitles(cleanId, type, s, ep), 2500).catch(() => []);
       }
       for (const st of streams)
         st.subtitles = subs || [];
-      streams.sort(
-        (a, b) => (QUALITY_ORDER[b.quality] || -2) - (QUALITY_ORDER[a.quality] || -2)
-      );
+      sortByQuality(streams);
+      streamCache.set(cacheKey, streams);
       return streams;
     } catch (e) {
       console.error("[Movy] " + (e && e.message ? e.message : e));

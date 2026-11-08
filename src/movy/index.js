@@ -38,157 +38,13 @@ const STREAM_HEADERS = {
 const PRIMARY_SERVERS = ["miami", "boise"];
 const SECONDARY_SERVERS = ["atlanta", "phoenix", "dallas"];
 
-const QUALITY_ORDER = {
-  "4K": 6,
-  "1440p": 5,
-  "1080p": 4,
-  "720p": 3,
-  "480p": 2,
-  "360p": 1,
-  Auto: 0,
-  Unknown: -1,
-};
-
-/* ---------- Pure ECMAScript mvm1 Decryption (QuickJS / Hermes Safe) ---------- */
-
-const MAGIC = [109, 118, 109, 49]; // "mvm1"
-const B64_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-
-function mix(e) {
-  e = e >>> 0;
-  e ^= e >>> 16;
-  e = Math.imul(e, 0x85ebca6b) >>> 0;
-  e ^= e >>> 13;
-  e = Math.imul(e, 0xc2b2ae35) >>> 0;
-  return (e ^ (e >>> 16)) >>> 0;
-}
-
-function rotl(e, a) {
-  e = e >>> 0;
-  a &= 31;
-  return a === 0 ? e : ((e << a) | (e >>> (32 - a))) >>> 0;
-}
-
-function b64decode(str) {
-  str = String(str || "")
-    .replace(/-/g, "+")
-    .replace(/_/g, "/")
-    .replace(/[^A-Za-z0-9+/]/g, "");
-  const out = [];
-  let buf = 0;
-  let bits = 0;
-  for (let i = 0; i < str.length; i++) {
-    buf = (buf << 6) | B64_CHARS.indexOf(str.charAt(i));
-    bits += 6;
-    if (bits >= 8) {
-      bits -= 8;
-      out.push((buf >> bits) & 255);
-      buf &= (1 << bits) - 1;
-    }
-  }
-  return new Uint8Array(out);
-}
-
-function utf8decode(bytes) {
-  let s = "";
-  let i = 0;
-  while (i < bytes.length) {
-    const c = bytes[i++];
-    let cp;
-    if (c < 0x80) {
-      cp = c;
-    } else if (c < 0xe0) {
-      cp = ((c & 31) << 6) | (bytes[i++] & 63);
-    } else if (c < 0xf0) {
-      cp = ((c & 15) << 12) | ((bytes[i++] & 63) << 6) | (bytes[i++] & 63);
-    } else {
-      cp =
-        ((c & 7) << 18) |
-        ((bytes[i++] & 63) << 12) |
-        ((bytes[i++] & 63) << 6) |
-        (bytes[i++] & 63);
-    }
-    if (cp > 0xffff) {
-      cp -= 0x10000;
-      s += String.fromCharCode(0xd800 + (cp >> 10), 0xdc00 + (cp & 1023));
-    } else {
-      s += String.fromCharCode(cp);
-    }
-  }
-  return s;
-}
-
-function initState(seed, mediaId) {
-  let fnv = 0x811c9dc5;
-  for (let t = 0; t < seed.length; t++) {
-    fnv = Math.imul(fnv ^ seed.charCodeAt(t), 0x1000193) >>> 0;
-  }
-  const S = new Uint32Array(61);
-  const used = new Uint8Array(61);
-  let n = mix((mix(fnv) ^ mix(((Number(mediaId) >>> 0) ^ 0x9e3779b9) >>> 0)) >>> 0) >>> 0;
-  for (let e = 0; e < 8; e++) {
-    const a = n % 61;
-    n = rotl((n + 0x9e3779b9) >>> 0, 7 + (7 & e));
-    S[a] = (n ^ mix(n)) >>> 0;
-    used[a] = 1;
-    n = mix((n + a) >>> 0);
-  }
-  return { S: S, used: used, acc: mix(0xa5a5a5a5 ^ n) >>> 0 };
-}
-
-function keystream(seed, mediaId, len) {
-  const st = initState(seed, mediaId);
-  const S = st.S;
-  const used = st.used;
-  let acc = st.acc;
-  const out = new Uint8Array(len);
-  let counter = 0;
-  for (let e = 0; e < len; ) {
-    const dd = acc % 61;
-    const negIn = used[dd] ? -1 : 0;
-    const r = S[dd] >>> 0;
-    const cc = Math.imul(0x9e3779b9, counter + 1) >>> 0;
-    const nn = (r ^ cc) >>> 0;
-    let b = (((acc ^ nn) >>> 0) | ((acc & nn & negIn) >>> 0)) >>> 0;
-    b = (rotl((b + acc) >>> 0, 31 & dd) ^ rotl(acc, 31 & Math.imul(dd, 7))) >>> 0;
-    acc = mix((b + 0x9e3779b9) >>> 0);
-    S[dd] = acc >>> 0;
-    used[dd] = 1;
-    const word = acc >>> 0;
-    counter++;
-    out[e++] = 255 & word;
-    if (e < len) out[e++] = (word >>> 8) & 255;
-    if (e < len) out[e++] = (word >>> 16) & 255;
-    if (e < len) out[e++] = (word >>> 24) & 255;
-  }
-  return out;
-}
-
-function decryptSources(payloadText, seed, mediaId) {
-  const cleanText = String(payloadText || "").replace(/^\s*"|"\s*$/g, "").trim();
-  const data = b64decode(cleanText);
-  const ks = keystream(seed, Number(mediaId), data.length);
-  for (let j = 0; j < data.length; j++) data[j] ^= ks[j];
-  for (let j = 0; j < MAGIC.length; j++) {
-    if (data[j] !== MAGIC[j]) throw new Error("mvm1 magic mismatch");
-  }
-  return utf8decode(data.subarray(MAGIC.length));
-}
+const { decryptSources } = require("./mvm1-byte-codecs");
+const { sortByQuality, withTimeout, TtlCache } = require("../shared/provider-utils");
 
 /* ---------- Network helpers ---------- */
 
 function timeout(promise, ms = 3500) {
-  if (typeof setTimeout !== "function") return promise;
-  let timer;
-  const timeoutPromise = new Promise((_, reject) => {
-    timer = setTimeout(() => reject(new Error("Timeout " + ms + "ms")), ms);
-  });
-  return Promise.race([
-    promise.finally(() => {
-      if (typeof clearTimeout === "function") clearTimeout(timer);
-    }),
-    timeoutPromise,
-  ]);
+  return withTimeout(promise, ms, "Movy timeout");
 }
 
 function buildQuery(params) {
@@ -202,11 +58,25 @@ function buildQuery(params) {
   return parts.join("&");
 }
 
-const seedCache = new Map();
+// Bounded LRU caches (the old seed Map grew by one entry per title, forever).
+const MAX_CACHE_SIZE = 100;
+const seedCache = new TtlCache(MAX_CACHE_SIZE, 30000);
+// Stream URLs are signed for hours (s=s1.<expiry>), so 10 minutes is well inside the window.
+const STREAM_TTL_MS = 10 * 60 * 1000;
+// A title with no sources on any server is remembered briefly (it costs ~4 s to re-check).
+// If a server timed out (phoenix often answers in >5 s) the miss is less certain: keep it
+// only long enough to absorb a player's immediate retries.
+const EMPTY_TTL_MS = 2 * 60 * 1000;
+const UNCERTAIN_EMPTY_TTL_MS = 30 * 1000;
+const streamCache = new TtlCache(MAX_CACHE_SIZE, STREAM_TTL_MS);
+
+function isTimeout(result) {
+  return result.status === "rejected" && /timeout/i.test(String((result.reason && result.reason.message) || ""));
+}
 
 async function getSeed(mediaId) {
   const hit = seedCache.get(mediaId);
-  if (hit && hit.expiresAt - 5000 > Date.now()) return hit.seed;
+  if (hit) return hit;
   const res = await timeout(
     fetch(API + "/seed?mediaId=" + encodeURIComponent(mediaId), {
       headers: API_HEADERS,
@@ -215,10 +85,8 @@ async function getSeed(mediaId) {
   );
   if (!res.ok) throw new Error("seed HTTP " + res.status);
   const data = await res.json();
-  seedCache.set(mediaId, {
-    seed: data.seed,
-    expiresAt: Date.now() + (data.ttlMs || 30000),
-  });
+  // Refresh 5 s before the server-side expiry, as before.
+  seedCache.set(mediaId, data.seed, Math.max(1000, (data.ttlMs || 30000) - 5000));
   return data.seed;
 }
 
@@ -343,6 +211,11 @@ async function getStreams(tmdbId, mediaType, season, episode) {
     const type = mediaType === "tv" ? "tv" : "movie";
     const s = type === "tv" ? Math.max(1, parseInt(season, 10) || 1) : null;
     const ep = type === "tv" ? Math.max(1, parseInt(episode, 10) || 1) : null;
+    const cacheKey = type + ":" + cleanId + ":" + s + ":" + ep;
+
+    // Fast-path: O(1) cache hit (an empty array is a remembered miss)
+    const cached = streamCache.get(cacheKey);
+    if (cached) return cached;
 
     // 1. Kick off seed, subtitle search, and detail page in parallel
     const seedPromise = getSeed(cleanId);
@@ -438,6 +311,7 @@ async function getStreams(tmdbId, mediaType, season, episode) {
       }
     }
 
+    let sawTimeout = primaryResults.some(isTimeout);
     for (let i = 0; i < PRIMARY_SERVERS.length; i++) {
       const res = primaryResults[i];
       if (res.status === "fulfilled" && res.value) {
@@ -458,6 +332,7 @@ async function getStreams(tmdbId, mediaType, season, episode) {
       const secondaryResults = await Promise.allSettled(
         SECONDARY_SERVERS.map((srv) => fetchServerSources(srv, detailParams, cleanId))
       );
+      sawTimeout = sawTimeout || secondaryResults.some(isTimeout);
       for (let i = 0; i < SECONDARY_SERVERS.length; i++) {
         const res = secondaryResults[i];
         if (res.status === "fulfilled" && res.value) {
@@ -466,7 +341,10 @@ async function getStreams(tmdbId, mediaType, season, episode) {
       }
     }
 
-    if (!streams.length) return [];
+    if (!streams.length) {
+      streamCache.set(cacheKey, [], sawTimeout ? UNCERTAIN_EMPTY_TTL_MS : EMPTY_TTL_MS);
+      return [];
+    }
 
     // 4. Attach subtitles: prioritize embedded payload subtitles
     let subs = payloadSubs;
@@ -475,9 +353,8 @@ async function getStreams(tmdbId, mediaType, season, episode) {
     }
     for (const st of streams) st.subtitles = subs || [];
 
-    streams.sort(
-      (a, b) => (QUALITY_ORDER[b.quality] || -2) - (QUALITY_ORDER[a.quality] || -2)
-    );
+    sortByQuality(streams);
+    streamCache.set(cacheKey, streams);
     return streams;
   } catch (e) {
     console.error("[Movy] " + (e && e.message ? e.message : e));
