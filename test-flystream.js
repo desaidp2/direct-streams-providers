@@ -258,6 +258,34 @@ async function runTests() {
   assert.strictEqual(b, c);
   console.log("✓ 3 concurrent identical getStreams -> 1 API call");
 
+  // Metadata passthrough: given title/imdb/year -> no TMDB request, API carries them.
+  calls.length = 0;
+  await getStreams(5151, "movie", 1, 1, { skipCompanion: true, meta: { title: "Given Title", imdbId: "tt0000009", year: 1999 } });
+  assert.strictEqual(calls.filter((c) => c.url.includes("db.wecollege.net")).length, 0, "no TMDB lookup when meta is given");
+  const gq = query(apiCalls()[0].url);
+  assert.strictEqual(gq.title, "Given Title");
+  assert.strictEqual(gq.imdb, "tt0000009");
+  assert.strictEqual(gq.year, "1999");
+  console.log("✓ companion meta passthrough skips the TMDB round trip");
+
+  // Late fill: a browser call that overruns its budget is still cached when it lands.
+  let execs = 0;
+  global.challengeBrowser = {
+    execute: async () => {
+      execs++;
+      await new Promise((r) => setTimeout(r, 900));
+      return { result: JSON.stringify({ status: 200, body: JSON.stringify(API_BODY) }), cookies: "c=1", userAgent: "UA" };
+    },
+  };
+  const first = await getStreams(6262, "movie", 1, 1, { browserTimeoutMs: 50 });
+  assert.deepStrictEqual(first, [], "timed out -> [] now");
+  await new Promise((r) => setTimeout(r, 500));
+  const second = await getStreams(6262, "movie", 1, 1, { browserTimeoutMs: 50 });
+  assert(second.length > 0, "late result must be served from cache");
+  assert.strictEqual(execs, 1, "retry is a cache hit, not a second browser call");
+  delete global.challengeBrowser;
+  console.log(`✓ late fill: timed-out browser call cached on arrival (${second.length} streams, ${execs} browser call)`);
+
   console.log("\n🎉 FlyStream offline tests passed\n");
   process.exit(0); // the stubbed hanging fetch never settles
 }

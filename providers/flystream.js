@@ -233,35 +233,33 @@ ${details || "Direct HLS Stream"}`,
     function inPageFetchJs(path) {
       return "(async () => { const r = await fetch(" + JSON.stringify(path) + ", { headers: { Accept: 'application/json' }, credentials: 'same-origin' }); return JSON.stringify({ status: r.status, body: await r.text() }); })()";
     }
-    function fetchViaHostBrowser(cb, url, title) {
+    function parseBrowserResult(cb, r, title) {
       return __async(this, null, function* () {
+        const res = JSON.parse(String(r && r.result || ""));
+        if (res.status !== 200)
+          return { ok: false, reason: `browser HTTP ${res.status}` };
+        const cookie = r && r.cookies || (typeof cb.getCookies === "function" ? yield cb.getCookies() : "");
+        const userAgent = r && r.userAgent || (typeof cb.getUserAgent === "function" ? yield cb.getUserAgent() : BROWSER_UA2);
+        return { ok: true, streams: mapApiStreams(JSON.parse(res.body), title, { cookie, userAgent }), via: "browser" };
+      });
+    }
+    function fetchViaHostBrowser(cb, url, title, timeoutMs) {
+      return __async(this, null, function* () {
+        const budget = timeoutMs || BROWSER_API_TIMEOUT_MS;
+        const work = Promise.resolve().then(
+          () => cb.execute(BROWSER_ORIGIN_PAGE, { reuse: true, evaluateJs: inPageFetchJs(url.slice(API_BASE.length)), timeoutMs: budget })
+        ).then((r) => parseBrowserResult(cb, r, title));
         try {
-          const r = yield withTimeout2(
-            cb.execute(BROWSER_ORIGIN_PAGE, {
-              reuse: true,
-              evaluateJs: inPageFetchJs(url.slice(API_BASE.length)),
-              timeoutMs: BROWSER_API_TIMEOUT_MS
-            }),
-            BROWSER_API_TIMEOUT_MS + 500,
-            "FlyStream API (browser)"
-          );
-          const res = JSON.parse(String(r && r.result || ""));
-          if (res.status !== 200)
-            return { ok: false, reason: `browser HTTP ${res.status}` };
-          const cookie = r && r.cookies || (typeof cb.getCookies === "function" ? yield cb.getCookies() : "");
-          const userAgent = r && r.userAgent || (typeof cb.getUserAgent === "function" ? yield cb.getUserAgent() : BROWSER_UA2);
-          return {
-            ok: true,
-            streams: mapApiStreams(JSON.parse(res.body), title, { cookie, userAgent }),
-            via: "browser"
-          };
+          return yield withTimeout2(work, budget + 500, "FlyStream API (browser)");
         } catch (err) {
-          return { ok: false, reason: "browser: " + String(err && err.message || err) };
+          const reason = "browser: " + String(err && err.message || err);
+          const timedOut = /FlyStream API \(browser\) \d+ms/.test(reason);
+          return timedOut ? { ok: false, reason, late: work.catch(() => null) } : { ok: false, reason };
         }
       });
     }
     var BUILD_COMPANION_URL = true ? "" : "";
-    var COMPANION_TIMEOUT_MS = 6e3;
+    var COMPANION_TIMEOUT_MS = 8e3;
     function splitUrls(v) {
       return v ? String(v).split(",").map((u) => u.trim().replace(/\/+$/, "")).filter(Boolean) : [];
     }
@@ -314,7 +312,7 @@ ${details || "Direct HLS Stream"}`,
         const cb = hostChallengeBrowser();
         if (cb) {
           const url2 = buildApiUrl(buildApiParams(query));
-          return fetchViaHostBrowser(cb, url2, query.title);
+          return fetchViaHostBrowser(cb, url2, query.title, opts && opts.browserTimeoutMs);
         }
         const companionResult = opts && opts.skipCompanion ? null : yield fetchViaCompanion(query);
         if (companionResult && companionResult.ok) {
@@ -334,6 +332,7 @@ ${details || "Direct HLS Stream"}`,
     }
     module2.exports = {
       API_BASE,
+      BROWSER_ORIGIN_PAGE,
       PLAYBACK_HEADERS,
       randomViewerId,
       buildApiParams,
@@ -528,7 +527,8 @@ function getStreams(tmdbId, mediaType = "movie", season = 1, episode = 1, opts) 
 function resolveStreams(tmdbId, normType, s, e, cacheKey, opts) {
   return __async(this, null, function* () {
     try {
-      const meta = yield fetchTitleMetadata(String(tmdbId), normType);
+      const given = opts && opts.meta;
+      const meta = given && given.title ? given : yield fetchTitleMetadata(String(tmdbId), normType);
       const result = yield fetchApiStreams({
         mediaType: normType,
         title: meta.title,
@@ -540,6 +540,14 @@ function resolveStreams(tmdbId, normType, s, e, cacheKey, opts) {
       }, opts);
       if (!result.ok)
         console.warn(`[FlyStream] API call failed (${result.reason}) for ${cacheKey}`);
+      if (result.late) {
+        result.late.then((late) => {
+          if (late && late.ok && late.streams.length) {
+            streamCache.set(cacheKey, sortByQuality(late.streams), CACHE_TTL_MS);
+            console.log(`[FlyStream] late result cached: ${late.streams.length} stream(s) for ${cacheKey}`);
+          }
+        });
+      }
       const streams = result.ok ? sortByQuality(result.streams) : [];
       const ttl = !result.ok ? FAILURE_TTL_MS : streams.length ? CACHE_TTL_MS : EMPTY_TTL_MS;
       streamCache.set(cacheKey, streams, ttl);

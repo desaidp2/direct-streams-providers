@@ -69,7 +69,14 @@ if (enableBrowser) {
   try {
     const browserHost = require("./src/host/chromium-challenge-browser");
     global.challengeBrowser = browserHost;
-    browserHost.warmUp("https://flystream.net/");
+    // Warm the site (passes its bot check), then open the kept tab the API calls run in, so the
+    // first request after a restart does not pay for that page load inside its 7 s budget.
+    const { BROWSER_ORIGIN_PAGE } = require("./src/flystream/flystream-api-streams");
+    browserHost
+      .warmUp("https://flystream.net/")
+      .then(() => browserHost.execute(BROWSER_ORIGIN_PAGE, { reuse: true, evaluateJs: "document.title", timeoutMs: 30000 }))
+      .then(() => console.log("[ChallengeBrowser] API tab ready"))
+      .catch((err) => console.warn("[ChallengeBrowser] API tab warm-up failed:", err.message || err));
     const shutdown = () => browserHost.close().finally(() => process.exit(0));
     process.on("SIGTERM", shutdown);
     process.on("SIGINT", shutdown);

@@ -107,6 +107,13 @@ async function run() {
   flyArgs = null;
   await route("/companion/flystream", { tmdbId: "77", type: "movie" }, "http://h", { clientAddress: "192.168.1.20" });
   assert(flyArgs && flyArgs[4] && flyArgs[4].skipCompanion === true, "companion route must pass skipCompanion");
+  assert.strictEqual(flyArgs[4].meta, undefined, "no title -> no meta passthrough");
+  await route("/companion/flystream", { tmdbId: "78", type: "movie", title: "The Dark Knight", imdb: "tt0468569", year: "2008" }, "http://h", { clientAddress: "10.0.0.2" });
+  assert.deepStrictEqual(flyArgs[4].meta, { title: "The Dark Knight", imdbId: "tt0468569", year: 2008 });
+  await route("/companion/flystream", { tmdbId: "79", title: "X", imdb: "nm123", year: "20x8" }, "http://h", { clientAddress: "10.0.0.2" });
+  assert.deepStrictEqual(flyArgs[4].meta, { title: "X", imdbId: undefined, year: undefined }, "bad imdb / year dropped");
+  await route("/companion/flystream", { tmdbId: "80", title: "y".repeat(201) }, "http://h", { clientAddress: "10.0.0.2" });
+  assert.strictEqual(flyArgs[4].meta, undefined, "over-long title rejected");
   console.log("✓ /companion/flystream calls getStreams with skipCompanion");
 
   // 8. Serve-time injection: marker replaced; missing marker throws instead of shipping silently

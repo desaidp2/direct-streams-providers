@@ -25,6 +25,16 @@ const { companionAllowed } = require("./client-address-private-network-check");
 // need them, and `Access-Control-Allow-Origin: *` would let any web page a LAN browser opens read
 // them), and never cached by intermediaries.
 const COMPANION_HEADERS = { "Content-Type": "application/json", "Cache-Control": "no-store" };
+// Title metadata the client already resolved (the provider sends title / imdb / year in the
+// companion query). Validated strictly; anything off is dropped and the server looks it up itself.
+function companionMeta(query) {
+  const title = typeof query.title === "string" ? query.title.trim() : "";
+  if (!title || title.length > 200) return undefined;
+  const imdbId = /^tt\d{1,10}$/.test(query.imdb || "") ? query.imdb : undefined;
+  const year = /^\d{4}$/.test(query.year || "") ? parseInt(query.year, 10) : undefined;
+  return { title, imdbId, year };
+}
+
 const COMPANION_PATHS = new Set(["/companion/flystream", "/api/flystream/streams", "/companion/flystream/cookies"]);
 
 // Read-through file cache keyed by path, invalidated by mtime: one stat() per request instead of
@@ -330,7 +340,9 @@ async function route(path, query = {}, baseUrl = "", requestInfo = {}) {
     const mediaType = query.type || query.mediaType || "movie";
     const season = query.season ? parseInt(query.season, 10) : 1;
     const episode = query.episode ? parseInt(query.episode, 10) : 1;
-    const streams = tmdbId ? await getFlyStreamStreams(tmdbId, mediaType, season, episode, { skipCompanion: true }) : [];
+    const streams = tmdbId
+      ? await getFlyStreamStreams(tmdbId, mediaType, season, episode, { skipCompanion: true, meta: companionMeta(query) })
+      : [];
     return {
       status: 200,
       headers: COMPANION_HEADERS,

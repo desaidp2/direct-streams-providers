@@ -192,7 +192,10 @@ async function getStreams(tmdbId, mediaType = "movie", season = 1, episode = 1, 
 
 async function resolveStreams(tmdbId, normType, s, e, cacheKey, opts) {
   try {
-    const meta = await fetchTitleMetadata(String(tmdbId), normType);
+    // The companion route passes the title/IMDb/year the TV already looked up: skip a second
+    // TMDB round trip (0.3-2 s) on every uncached request.
+    const given = opts && opts.meta;
+    const meta = given && given.title ? given : await fetchTitleMetadata(String(tmdbId), normType);
     const result = await fetchApiStreams({
       mediaType: normType,
       title: meta.title,
@@ -203,6 +206,16 @@ async function resolveStreams(tmdbId, normType, s, e, cacheKey, opts) {
       episode: e,
     }, opts);
     if (!result.ok) console.warn(`[FlyStream] API call failed (${result.reason}) for ${cacheKey}`);
+    // Late fill: a browser call that overran the budget still lands in the cache when it finishes,
+    // so the client's retry is a hit instead of a second full lookup.
+    if (result.late) {
+      result.late.then((late) => {
+        if (late && late.ok && late.streams.length) {
+          streamCache.set(cacheKey, sortByQuality(late.streams), CACHE_TTL_MS);
+          console.log(`[FlyStream] late result cached: ${late.streams.length} stream(s) for ${cacheKey}`);
+        }
+      });
+    }
 
     const streams = result.ok ? sortByQuality(result.streams) : [];
     const ttl = !result.ok ? FAILURE_TTL_MS : streams.length ? CACHE_TTL_MS : EMPTY_TTL_MS;

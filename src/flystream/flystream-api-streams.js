@@ -160,28 +160,31 @@ function inPageFetchJs(path) {
 // Calls the API through the host browser (a real tab that has passed the site's bot check).
 // Same { ok, streams | reason } contract as the fetch path. Forwards session cookies and
 // User-Agent to the stream objects for ExoPlayer playback.
-async function fetchViaHostBrowser(cb, url, title) {
+// Turns a host execute() result into the { ok, streams | reason } contract.
+async function parseBrowserResult(cb, r, title) {
+  const res = JSON.parse(String((r && r.result) || ""));
+  if (res.status !== 200) return { ok: false, reason: `browser HTTP ${res.status}` };
+  const cookie = (r && r.cookies) || (typeof cb.getCookies === "function" ? await cb.getCookies() : "");
+  const userAgent = (r && r.userAgent) || (typeof cb.getUserAgent === "function" ? await cb.getUserAgent() : BROWSER_UA);
+  return { ok: true, streams: mapApiStreams(JSON.parse(res.body), title, { cookie, userAgent }), via: "browser" };
+}
+
+// Calls the API through the host browser. On timeout the in-page fetch keeps running, and the
+// result carries `late`: a promise of its eventual outcome, so the caller can still cache it.
+// (Measured on the Pi: uncached API answers take 1-6 s, so some calls overrun the budget.)
+async function fetchViaHostBrowser(cb, url, title, timeoutMs) {
+  const budget = timeoutMs || BROWSER_API_TIMEOUT_MS;
+  const work = Promise.resolve()
+    .then(() =>
+      cb.execute(BROWSER_ORIGIN_PAGE, { reuse: true, evaluateJs: inPageFetchJs(url.slice(API_BASE.length)), timeoutMs: budget })
+    )
+    .then((r) => parseBrowserResult(cb, r, title));
   try {
-    const r = await withTimeout(
-      cb.execute(BROWSER_ORIGIN_PAGE, {
-        reuse: true,
-        evaluateJs: inPageFetchJs(url.slice(API_BASE.length)),
-        timeoutMs: BROWSER_API_TIMEOUT_MS,
-      }),
-      BROWSER_API_TIMEOUT_MS + 500,
-      "FlyStream API (browser)"
-    );
-    const res = JSON.parse(String((r && r.result) || ""));
-    if (res.status !== 200) return { ok: false, reason: `browser HTTP ${res.status}` };
-    const cookie = (r && r.cookies) || (typeof cb.getCookies === "function" ? await cb.getCookies() : "");
-    const userAgent = (r && r.userAgent) || (typeof cb.getUserAgent === "function" ? await cb.getUserAgent() : BROWSER_UA);
-    return {
-      ok: true,
-      streams: mapApiStreams(JSON.parse(res.body), title, { cookie, userAgent }),
-      via: "browser",
-    };
+    return await withTimeout(work, budget + 500, "FlyStream API (browser)");
   } catch (err) {
-    return { ok: false, reason: "browser: " + String((err && err.message) || err) };
+    const reason = "browser: " + String((err && err.message) || err);
+    const timedOut = /FlyStream API \(browser\) \d+ms/.test(reason);
+    return timedOut ? { ok: false, reason, late: work.catch(() => null) } : { ok: false, reason };
   }
 }
 
@@ -195,7 +198,9 @@ const BUILD_COMPANION_URL =
   typeof __FLYSTREAM_COMPANION_URL__ !== "undefined" ? __FLYSTREAM_COMPANION_URL__ : "";
 
 // Companion budget: meta lookup (2 s) + this stays under the router's / app's 9 s deadline.
-const COMPANION_TIMEOUT_MS = 6000;
+// 8 s: the companion's own worst case is ~9 s (2 s meta + 7 s browser) and its late-fill cache
+// makes the retry instant. On Nuvio this bound cannot fire anyway (synchronous native fetch).
+const COMPANION_TIMEOUT_MS = 8000;
 
 function splitUrls(v) {
   return v ? String(v).split(",").map((u) => u.trim().replace(/\/+$/, "")).filter(Boolean) : [];
@@ -263,7 +268,7 @@ async function fetchApiStreams(query, opts) {
   const cb = hostChallengeBrowser();
   if (cb) {
     const url = buildApiUrl(buildApiParams(query));
-    return fetchViaHostBrowser(cb, url, query.title);
+    return fetchViaHostBrowser(cb, url, query.title, opts && opts.browserTimeoutMs);
   }
 
   // Not in host browser context (e.g. Nuvio on Android TV): check LAN companion.
@@ -286,6 +291,7 @@ async function fetchApiStreams(query, opts) {
 
 module.exports = {
   API_BASE,
+  BROWSER_ORIGIN_PAGE,
   PLAYBACK_HEADERS,
   randomViewerId,
   buildApiParams,
