@@ -6,7 +6,10 @@
  * Behaviour pinned (from movy.sx's player script, 2026-11-08):
  *  - original-audio servers in the site's order: miami, boise, nashville, chicago, vegas, reno,
  *    oakland, seattle, phoenix, atlanta, portland, austin, dallas; dubbed servers never asked
- *  - miami + boise first, then the rest in batches of 3, stopping after the first batch with sources
+ *  - miami + boise first, then the rest through a sliding window of 3 (a slow failure never blocks
+ *    the next server); launching stops at the first server with sources (+ short grace)
+ *  - a source labelled "Auto" is a master playlist: one variant -> its height ("900p", as the
+ *    site shows Reno), several -> "Auto"; language labels stay "Unknown (<label>)"
  *  - every request carries the site's fields; one seed per title, one re-seed on 401
  *  - one attempt per server (site: retry 0); a 429 stops the walk; a seed 429 asks no server
  *  - the whole lookup stays inside a time budget
@@ -72,6 +75,11 @@ global.fetch = async (url) => {
     return reply(200, `<html><script id="__NEXT_DATA__" type="application/json">${JSON.stringify(nd)}</script></html>`);
   }
   if (u.hostname === "subtitles.vidy.st") return reply(200, "[]");
+  if (u.hostname === "cdn.example" && world.masters && url in world.masters) {
+    const m = world.masters[url];
+    if (m.hang) return new Promise(() => {});
+    return reply(m.status || 200, m.body);
+  }
   throw new Error("unexpected network call in offline test: " + url);
 };
 
@@ -100,32 +108,44 @@ async function run() {
 
   // 2. The reported edge case: Miami/Boise and the first fallback batch fail; Reno has 900p.
   resetWorld();
-  world.servers.reno = { status: 200, sources: [src("900p", "re")] };
+  // Live shape (2026-11-08): Reno answers one source, quality "Auto", a master with one 1600x900 variant.
+  const renoUrl = "https://cdn.example/re/master.m3u8";
+  world.servers.reno = { status: 200, sources: [{ url: renoUrl, quality: "Auto" }] };
+  world.masters = { [renoUrl]: { body: '#EXTM3U\n#EXT-X-STREAM-INF:PROGRAM-ID=1,BANDWIDTH=2552213,RESOLUTION=1600x900,FRAME-RATE=24.000,CODECS="avc1.640028,mp4a.40.2"\nindex-900.m3u8\n' } };
+  for (const n of ["nashville", "chicago", "vegas"]) world.servers[n] = { status: 500, delayMs: 30 };
   s = await getStreams("1644913", "movie");
-  assert.deepStrictEqual(s.map((x) => `${x.name}|${x.quality}`), ["Movy Reno - 900p|900p"]);
+  assert.deepStrictEqual(s.map((x) => `${x.name}|${x.quality}`), ["Movy Reno - 900p|900p"], "Auto master with one 900p variant is labelled 900p");
+  assert.strictEqual(s[0].url, renoUrl, "the row keeps the master URL");
+  assert(/ - 900p HLS$/.test(s[0].title), s[0].title);
   assert.deepStrictEqual(served().slice(0, 2).sort(), ["boise", "miami"]);
-  assert.deepStrictEqual(served().slice(2).sort(), ["chicago", "nashville", "oakland", "reno", "seattle", "vegas"].sort());
-  for (const later of ["phoenix", "atlanta", "portland", "austin", "dallas"]) assert(!served().includes(later), later + " must not be asked after Reno's batch had sources");
+  for (const later of ["portland", "austin", "dallas"]) assert(!served().includes(later), later + " must not be asked once Reno had sources");
   for (const d of DUBBED) assert(!served().includes(d), d + " (dubbed) must never be asked");
-  console.log("✓ Reno 900p found: walks the site's order in batches, stops after the first batch with sources");
+  console.log("✓ Reno 900p found (Auto master, one 1600x900 variant): sliding window stops once Reno has sources");
 
-  // 3. Batches run one after another, in the site's order, 3 at a time.
+  // 3. Sliding window: site order, at most 3 in flight, a slow failure does not block the next server.
   resetWorld();
+  let inFlight = 0;
+  let peak = 0;
   for (const n of ORIGINAL) world.servers[n] = { status: 500, delayMs: 40 };
+  world.servers.nashville = { status: 500, delayMs: 400 }; // slow failure
+  const origFetch = global.fetch;
+  global.fetch = async (url, init) => {
+    const isSrc = String(url).includes("/sources?") && !/\/(miami|boise)\//.test(String(url));
+    if (isSrc) peak = Math.max(peak, ++inFlight);
+    try { return await origFetch(url, init); } finally { if (isSrc) inFlight--; }
+  };
   s = await getStreams("1644914", "movie", undefined, undefined, { budgetMs: 5000 });
+  global.fetch = origFetch;
   assert.deepStrictEqual(s, []);
   const order = served();
   assert.deepStrictEqual(order.slice(0, 2).sort(), ["boise", "miami"]);
-  const batches = [["nashville", "chicago", "vegas"], ["reno", "oakland", "seattle"], ["phoenix", "atlanta", "portland"], ["austin", "dallas"]];
-  let i = 2;
-  for (const batch of batches) {
-    assert.deepStrictEqual(order.slice(i, i + batch.length).sort(), batch.slice().sort(), "batch " + batch.join(","));
-    i += batch.length;
-  }
+  const launched = world.calls.slice(2).map((c) => c.server);
+  assert.deepStrictEqual(launched.slice().sort((x, y) => ORIGINAL.indexOf(x) - ORIGINAL.indexOf(y)), launched, "fallback servers launched in the site's order");
   assert.strictEqual(order.length, ORIGINAL.length, "each original-audio server asked exactly once (no retries)");
+  assert(peak <= 3, `at most 3 fallback requests in flight, saw ${peak}`);
   const startOf = (n) => world.calls.find((c) => c.server === n).t;
-  assert(startOf("reno") >= startOf("vegas") + 30, "next batch starts after the previous one finished");
-  console.log("✓ all 13 original-audio servers, site order, batches of 3, one attempt each");
+  assert(startOf("dallas") < startOf("nashville") + 400, "the slow Nashville failure did not hold back later servers");
+  console.log(`✓ all 13 servers once, site order, sliding window (peak ${peak} in flight), slow failure non-blocking`);
 
   // 4. One seed for the whole title, however many servers are asked.
   assert.strictEqual(world.seedCalls, 1, "one seed fetch per title");
@@ -192,7 +212,26 @@ async function run() {
   assert(!("title" in world.calls[0].params), "no title when the detail page is unavailable");
   console.log("✓ works without the detail page");
 
-  // 11. 900p sorts between 1080p and 720p; existing ranks unchanged.
+  // 11. "Auto" labelling: multi-variant master -> Auto (up to X); unreadable master -> Auto;
+  //     a language label stays Unknown (<label>).
+  resetWorld();
+  const multi = "https://cdn.example/mi/multi.m3u8";
+  const broken = "https://cdn.example/mi/broken.m3u8";
+  world.servers.miami = { status: 200, sources: [{ url: multi, quality: "Auto" }, { url: broken, quality: "auto" }, { url: "https://cdn.example/mi/en.m3u8", quality: "English" }] };
+  world.masters = {
+    [multi]: { body: "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1,RESOLUTION=1920x1080\na.m3u8\n#EXT-X-STREAM-INF:BANDWIDTH=1,RESOLUTION=1280x720\nb.m3u8\n" },
+    [broken]: { status: 403, body: "" },
+  };
+  s = await getStreams("1644920", "movie");
+  const byUrl = Object.fromEntries(s.map((x) => [x.url, x]));
+  assert.strictEqual(byUrl[multi].name, "Movy Miami - Auto");
+  assert(/Auto \(up to 1080p\) HLS$/.test(byUrl[multi].title), byUrl[multi].title);
+  assert.strictEqual(byUrl[broken].name, "Movy Miami - Auto", "unreadable master stays Auto");
+  assert.strictEqual(byUrl["https://cdn.example/mi/en.m3u8"].quality, "Unknown");
+  assert(/\(English\)/.test(byUrl["https://cdn.example/mi/en.m3u8"].title));
+  console.log("✓ Auto sources: single variant -> its height, several -> Auto (up to X), unreadable -> Auto; language labels kept");
+
+  // 12. 900p sorts between 1080p and 720p; existing ranks unchanged.
   const ranked = sortByQuality(["720p", "Auto", "900p", "4K", "1080p", "Unknown", "240p"].map((q) => ({ quality: q }))).map((x) => x.quality);
   assert.deepStrictEqual(ranked, ["4K", "1080p", "900p", "720p", "Auto", "Unknown", "240p"]);
   console.log("✓ 900p ranks between 1080p and 720p");

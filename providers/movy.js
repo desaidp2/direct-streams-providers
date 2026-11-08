@@ -279,6 +279,41 @@ var require_provider_utils = __commonJS({
   }
 });
 
+// src/shared/hls-master-playlist-parser.js
+var require_hls_master_playlist_parser = __commonJS({
+  "src/shared/hls-master-playlist-parser.js"(exports2, module2) {
+    var STREAM_INF_RE = /#EXT-X-STREAM-INF:([^\r\n]*)\r?\n\s*([^\s#][^\r\n]*)/g;
+    var RESOLUTION_RE = /(?:^|,)RESOLUTION=(\d+)x(\d+)/;
+    var BANDWIDTH_RE = /(?:^|,)BANDWIDTH=(\d+)/;
+    function resolveAgainst(url, base) {
+      if (!url || url.startsWith("http"))
+        return url;
+      try {
+        return new URL(url, base).toString();
+      } catch (e) {
+        return url;
+      }
+    }
+    function parseMasterPlaylist2(text, playlistUrl) {
+      const variants = [];
+      STREAM_INF_RE.lastIndex = 0;
+      let match;
+      while ((match = STREAM_INF_RE.exec(text)) !== null) {
+        const res = RESOLUTION_RE.exec(match[1]);
+        const bw = BANDWIDTH_RE.exec(match[1]);
+        variants.push({
+          url: resolveAgainst(match[2].trim(), playlistUrl),
+          width: res ? parseInt(res[1], 10) : null,
+          height: res ? parseInt(res[2], 10) : null,
+          bandwidth: bw ? parseInt(bw[1], 10) : null
+        });
+      }
+      return variants;
+    }
+    module2.exports = { parseMasterPlaylist: parseMasterPlaylist2, resolveAgainst };
+  }
+});
+
 // src/movy/index.js
 var BROWSER_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
 var MEDIA_UA = "okhttp/4.12.0";
@@ -310,17 +345,18 @@ var ORIGINAL_AUDIO_SERVERS = [
   "austin",
   "dallas"
 ];
-var FALLBACK_BATCH = 3;
-var SERVER_BATCHES = [ORIGINAL_AUDIO_SERVERS.slice(0, 2)];
-for (let i = 2; i < ORIGINAL_AUDIO_SERVERS.length; i += FALLBACK_BATCH) {
-  SERVER_BATCHES.push(ORIGINAL_AUDIO_SERVERS.slice(i, i + FALLBACK_BATCH));
-}
+var PRIMARY_SERVERS = ORIGINAL_AUDIO_SERVERS.slice(0, 2);
+var FALLBACK_SERVERS = ORIGINAL_AUDIO_SERVERS.slice(2);
+var FALLBACK_CONCURRENCY = 3;
+var FOUND_GRACE_MS = 300;
+var MASTER_PEEK_MS = 1500;
 var LOOKUP_BUDGET_MS = 8e3;
 var REQUEST_TIMEOUT_MS = 3500;
 var MIN_BATCH_MS = 300;
 var DETAIL_WAIT_MS = 1500;
 var { decryptSources } = require_mvm1_byte_codecs();
 var { sortByQuality, withTimeout, TtlCache } = require_provider_utils();
+var { parseMasterPlaylist } = require_hls_master_playlist_parser();
 function timeout(promise, ms = 3500) {
   return withTimeout(promise, ms, "Movy timeout");
 }
@@ -340,9 +376,6 @@ var STREAM_TTL_MS = 10 * 60 * 1e3;
 var EMPTY_TTL_MS = 2 * 60 * 1e3;
 var UNCERTAIN_EMPTY_TTL_MS = 30 * 1e3;
 var streamCache = new TtlCache(MAX_CACHE_SIZE, STREAM_TTL_MS);
-function isTimeout(result) {
-  return result.status === "rejected" && /timeout/i.test(String(result.reason && result.reason.message || ""));
-}
 function httpError(what, status) {
   const err = new Error(what + " HTTP " + status);
   err.status = status;
@@ -491,6 +524,83 @@ function qualityLabel(raw) {
 function serverTitle(server) {
   return server.charAt(0).toUpperCase() + server.slice(1);
 }
+function walkFallback(servers, ask, o) {
+  return new Promise((resolve) => {
+    let next = 0;
+    let active = 0;
+    let done = false;
+    let grace = null;
+    const finish = () => {
+      if (done)
+        return;
+      done = true;
+      if (grace)
+        clearTimeout(grace);
+      resolve();
+    };
+    const stopLaunching = () => o.hasStreams() || o.state.rateLimited;
+    const launch = () => {
+      while (!done && !stopLaunching() && active < FALLBACK_CONCURRENCY && next < servers.length) {
+        const remaining = o.left();
+        if (remaining < MIN_BATCH_MS) {
+          o.state.sawTimeout = true;
+          break;
+        }
+        const srv = servers[next++];
+        active++;
+        ask(srv, Math.min(o.requestTimeoutMs, remaining)).then(
+          (data) => {
+            if (done || !data)
+              return;
+            const had = o.hasStreams();
+            o.collect(data, srv);
+            if (!had && o.hasStreams())
+              grace = setTimeout(finish, FOUND_GRACE_MS);
+          },
+          (err) => {
+            if (!done)
+              o.noteFailure(err);
+          }
+        ).then(() => {
+          active--;
+          if (done)
+            return;
+          if (o.state.rateLimited)
+            return finish();
+          if (!o.hasStreams())
+            launch();
+          if (active === 0)
+            finish();
+        });
+      }
+      if (active === 0)
+        finish();
+    };
+    launch();
+  });
+}
+function labelAutoRow(row, timeoutMs) {
+  return __async(this, null, function* () {
+    try {
+      const res = yield timeout(fetch(row.url, { headers: STREAM_HEADERS }), timeoutMs);
+      if (!res.ok)
+        return;
+      const variants = parseMasterPlaylist(yield res.text(), row.url).filter((v) => v.height);
+      if (!variants.length)
+        return;
+      const top = qualityLabel(String(Math.max.apply(null, variants.map((v) => v.height))));
+      const prefix = row.title.replace(/ - Auto( \(.*\))? HLS$/, "");
+      if (variants.length === 1) {
+        row.quality = top;
+        row.name = row.name.replace(/ - Auto$/, " - " + top);
+        row.title = prefix + " - " + top + " HLS";
+      } else {
+        row.title = prefix + " - Auto (up to " + top + ") HLS";
+      }
+    } catch (_) {
+    }
+  });
+}
 function getStreams(tmdbId, mediaType, season, episode, opts) {
   return __async(this, null, function* () {
     try {
@@ -526,8 +636,9 @@ function getStreams(tmdbId, mediaType, season, episode, opts) {
         for (const src of sources) {
           if (!src || !src.url || seenUrls.has(src.url))
             continue;
-          const isLangLabel = !/\d/.test(String(src.quality || ""));
-          const q = isLangLabel ? "Unknown" : qualityLabel(src.quality);
+          const isAuto = /^\s*auto\s*$/i.test(String(src.quality || ""));
+          const isLangLabel = !isAuto && !/\d/.test(String(src.quality || ""));
+          const q = isAuto ? "Auto" : isLangLabel ? "Unknown" : qualityLabel(src.quality);
           seenUrls.add(src.url);
           streams.push({
             name: "Movy " + serverTitle(server) + " - " + q,
@@ -543,6 +654,8 @@ function getStreams(tmdbId, mediaType, season, episode, opts) {
             },
             subtitles: []
           });
+          if (isAuto)
+            autoRows.push(streams[streams.length - 1]);
         }
       };
       var collectSources = collectSources2;
@@ -563,6 +676,7 @@ function getStreams(tmdbId, mediaType, season, episode, opts) {
       if (cached)
         return cached;
       const detailPromise = fetchDetailParams(cleanId, type);
+      const subsPromise = fetchSubtitles(cleanId, type, s, ep).catch(() => []);
       try {
         yield getSeed(cleanId, Math.min(requestTimeoutMs, left()));
       } catch (e) {
@@ -573,28 +687,38 @@ function getStreams(tmdbId, mediaType, season, episode, opts) {
       const params = siteParams(type, cleanId, detail, s, ep);
       const streams = [];
       const seenUrls = /* @__PURE__ */ new Set();
+      const autoRows = [];
       let payloadSubs = [];
-      let sawTimeout = false;
-      let rateLimited = false;
-      for (const batch of SERVER_BATCHES) {
-        const remaining = left();
-        if (remaining < MIN_BATCH_MS) {
-          sawTimeout = true;
-          break;
-        }
-        const perRequest = Math.min(requestTimeoutMs, remaining);
-        const results = yield Promise.allSettled(batch.map((srv) => fetchServerSources(srv, params, cleanId, perRequest)));
-        for (let i = 0; i < batch.length; i++) {
-          const res = results[i];
-          if (res.status === "fulfilled" && res.value)
-            collectSources2(res.value, batch[i]);
-          else if (res.reason && res.reason.status === 429)
-            rateLimited = true;
-        }
-        if (results.some(isTimeout))
-          sawTimeout = true;
-        if (streams.length || rateLimited)
-          break;
+      const state = { sawTimeout: false, rateLimited: false };
+      const noteFailure = (err) => {
+        if (err && err.status === 429)
+          state.rateLimited = true;
+        if (/timeout/i.test(String(err && err.message || "")))
+          state.sawTimeout = true;
+      };
+      const primaryResults = yield Promise.allSettled(
+        PRIMARY_SERVERS.map((srv) => fetchServerSources(srv, params, cleanId, Math.min(requestTimeoutMs, left())))
+      );
+      primaryResults.forEach((res, i) => {
+        if (res.status === "fulfilled" && res.value)
+          collectSources2(res.value, PRIMARY_SERVERS[i]);
+        else
+          noteFailure(res.reason);
+      });
+      if (!streams.length && !state.rateLimited) {
+        yield walkFallback(FALLBACK_SERVERS, (srv, ms) => fetchServerSources(srv, params, cleanId, ms), {
+          left,
+          requestTimeoutMs,
+          collect: collectSources2,
+          hasStreams: () => streams.length > 0,
+          noteFailure,
+          state
+        });
+      }
+      const sawTimeout = state.sawTimeout;
+      const rateLimited = state.rateLimited;
+      if (autoRows.length && left() > 200) {
+        yield Promise.all(autoRows.map((row) => labelAutoRow(row, Math.min(MASTER_PEEK_MS, left()))));
       }
       if (!streams.length) {
         streamCache.set(cacheKey, [], sawTimeout || rateLimited ? UNCERTAIN_EMPTY_TTL_MS : EMPTY_TTL_MS);
@@ -602,7 +726,7 @@ function getStreams(tmdbId, mediaType, season, episode, opts) {
       }
       let subs = payloadSubs;
       if (!subs.length) {
-        subs = yield timeout(fetchSubtitles(cleanId, type, s, ep), 2500).catch(() => []);
+        subs = yield timeout(subsPromise, Math.max(1, Math.min(2500, left()))).catch(() => []);
       }
       for (const st of streams)
         st.subtitles = subs || [];

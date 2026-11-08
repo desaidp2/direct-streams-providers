@@ -42,13 +42,16 @@ const ORIGINAL_AUDIO_SERVERS = [
   "miami", "boise", "nashville", "chicago", "vegas", "reno", "oakland",
   "seattle", "phoenix", "atlanta", "portland", "austin", "dallas",
 ];
-// Miami + Boise first (the site marks them "May have 4K"), then the rest in batches of 3, stopping
-// after the first batch that has sources. Worst case 13 requests, one attempt each (site: retry 0).
-const FALLBACK_BATCH = 3;
-const SERVER_BATCHES = [ORIGINAL_AUDIO_SERVERS.slice(0, 2)];
-for (let i = 2; i < ORIGINAL_AUDIO_SERVERS.length; i += FALLBACK_BATCH) {
-  SERVER_BATCHES.push(ORIGINAL_AUDIO_SERVERS.slice(i, i + FALLBACK_BATCH));
-}
+// Miami + Boise first (the site marks them "May have 4K"), then the rest through a sliding window of
+// 3: a server that fails frees its slot for the next one at once, so a slow failure (Vegas took
+// 4.8 s live) no longer holds back a working server (Reno). Launching stops at the first server with
+// sources; servers already running get a short grace to add theirs. Worst case 13 requests, one
+// attempt each (site: retry 0).
+const PRIMARY_SERVERS = ORIGINAL_AUDIO_SERVERS.slice(0, 2);
+const FALLBACK_SERVERS = ORIGINAL_AUDIO_SERVERS.slice(2);
+const FALLBACK_CONCURRENCY = 3;
+const FOUND_GRACE_MS = 300;
+const MASTER_PEEK_MS = 1500;
 // Whole-lookup budget, under the router's 9 s per-provider deadline.
 const LOOKUP_BUDGET_MS = 8000;
 const REQUEST_TIMEOUT_MS = 3500;
@@ -57,6 +60,7 @@ const DETAIL_WAIT_MS = 1500;
 
 const { decryptSources } = require("./mvm1-byte-codecs");
 const { sortByQuality, withTimeout, TtlCache } = require("../shared/provider-utils");
+const { parseMasterPlaylist } = require("../shared/hls-master-playlist-parser");
 
 /* ---------- Network helpers ---------- */
 
@@ -241,6 +245,77 @@ function serverTitle(server) {
   return server.charAt(0).toUpperCase() + server.slice(1);
 }
 
+// Sliding window of FALLBACK_CONCURRENCY over `servers` in order (see FALLBACK_* above).
+// Results that arrive after the walk finished are ignored.
+function walkFallback(servers, ask, o) {
+  return new Promise((resolve) => {
+    let next = 0;
+    let active = 0;
+    let done = false;
+    let grace = null;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      if (grace) clearTimeout(grace);
+      resolve();
+    };
+    const stopLaunching = () => o.hasStreams() || o.state.rateLimited;
+    const launch = () => {
+      while (!done && !stopLaunching() && active < FALLBACK_CONCURRENCY && next < servers.length) {
+        const remaining = o.left();
+        if (remaining < MIN_BATCH_MS) {
+          o.state.sawTimeout = true;
+          break;
+        }
+        const srv = servers[next++];
+        active++;
+        ask(srv, Math.min(o.requestTimeoutMs, remaining))
+          .then(
+            (data) => {
+              if (done || !data) return;
+              const had = o.hasStreams();
+              o.collect(data, srv);
+              if (!had && o.hasStreams()) grace = setTimeout(finish, FOUND_GRACE_MS);
+            },
+            (err) => {
+              if (!done) o.noteFailure(err);
+            }
+          )
+          .then(() => {
+            active--;
+            if (done) return;
+            if (o.state.rateLimited) return finish();
+            if (!o.hasStreams()) launch();
+            if (active === 0) finish();
+          });
+      }
+      if (active === 0) finish();
+    };
+    launch();
+  });
+}
+
+// Relabels an "Auto" row from its master playlist (one bounded request to the media CDN).
+async function labelAutoRow(row, timeoutMs) {
+  try {
+    const res = await timeout(fetch(row.url, { headers: STREAM_HEADERS }), timeoutMs);
+    if (!res.ok) return;
+    const variants = parseMasterPlaylist(await res.text(), row.url).filter((v) => v.height);
+    if (!variants.length) return;
+    const top = qualityLabel(String(Math.max.apply(null, variants.map((v) => v.height))));
+    const prefix = row.title.replace(/ - Auto( \(.*\))? HLS$/, "");
+    if (variants.length === 1) {
+      row.quality = top;
+      row.name = row.name.replace(/ - Auto$/, " - " + top);
+      row.title = prefix + " - " + top + " HLS";
+    } else {
+      row.title = prefix + " - Auto (up to " + top + ") HLS";
+    }
+  } catch (_) {
+    // unreadable master: keep "Auto"
+  }
+}
+
 async function getStreams(tmdbId, mediaType, season, episode, opts) {
   try {
     if (!tmdbId) return [];
@@ -263,6 +338,9 @@ async function getStreams(tmdbId, mediaType, season, episode, opts) {
 
     // 1. Seed and detail page in parallel. No seed (e.g. 429 rate limit) -> ask no server at all.
     const detailPromise = fetchDetailParams(cleanId, type);
+    // Subtitle search does not depend on the servers: start it now so it runs alongside the walk
+    // (live it took up to 2.5 s; started after the walk it added that to every lookup).
+    const subsPromise = fetchSubtitles(cleanId, type, s, ep).catch(() => []);
     try {
       await getSeed(cleanId, Math.min(requestTimeoutMs, left()));
     } catch (e) {
@@ -274,6 +352,7 @@ async function getStreams(tmdbId, mediaType, season, episode, opts) {
 
     const streams = [];
     const seenUrls = new Set();
+    const autoRows = [];
     let payloadSubs = [];
     function collectSources(data, server) {
       if (!data) return;
@@ -314,8 +393,9 @@ async function getStreams(tmdbId, mediaType, season, episode, opts) {
       const sources = Array.isArray(data.sources) ? data.sources : [];
       for (const src of sources) {
         if (!src || !src.url || seenUrls.has(src.url)) continue;
-        const isLangLabel = !/\d/.test(String(src.quality || ""));
-        const q = isLangLabel ? "Unknown" : qualityLabel(src.quality);
+        const isAuto = /^\s*auto\s*$/i.test(String(src.quality || ""));
+        const isLangLabel = !isAuto && !/\d/.test(String(src.quality || ""));
+        const q = isAuto ? "Auto" : isLangLabel ? "Unknown" : qualityLabel(src.quality);
         seenUrls.add(src.url);
         streams.push({
           name: "Movy " + serverTitle(server) + " - " + q,
@@ -338,28 +418,36 @@ async function getStreams(tmdbId, mediaType, season, episode, opts) {
           },
           subtitles: [],
         });
+        if (isAuto) autoRows.push(streams[streams.length - 1]);
       }
     }
 
-    // 2. Walk the site's servers: Miami + Boise, then batches of 3, until a batch has sources,
-    //    the budget runs out, or the API rate-limits us (429 -> stop, do not walk further).
-    let sawTimeout = false;
-    let rateLimited = false;
-    for (const batch of SERVER_BATCHES) {
-      const remaining = left();
-      if (remaining < MIN_BATCH_MS) {
-        sawTimeout = true;
-        break;
-      }
-      const perRequest = Math.min(requestTimeoutMs, remaining);
-      const results = await Promise.allSettled(batch.map((srv) => fetchServerSources(srv, params, cleanId, perRequest)));
-      for (let i = 0; i < batch.length; i++) {
-        const res = results[i];
-        if (res.status === "fulfilled" && res.value) collectSources(res.value, batch[i]);
-        else if (res.reason && res.reason.status === 429) rateLimited = true;
-      }
-      if (results.some(isTimeout)) sawTimeout = true;
-      if (streams.length || rateLimited) break;
+    // 2. Miami + Boise together, then the sliding window over the rest.
+    const state = { sawTimeout: false, rateLimited: false };
+    const noteFailure = (err) => {
+      if (err && err.status === 429) state.rateLimited = true;
+      if (/timeout/i.test(String((err && err.message) || ""))) state.sawTimeout = true;
+    };
+    const primaryResults = await Promise.allSettled(
+      PRIMARY_SERVERS.map((srv) => fetchServerSources(srv, params, cleanId, Math.min(requestTimeoutMs, left())))
+    );
+    primaryResults.forEach((res, i) => {
+      if (res.status === "fulfilled" && res.value) collectSources(res.value, PRIMARY_SERVERS[i]);
+      else noteFailure(res.reason);
+    });
+    if (!streams.length && !state.rateLimited) {
+      await walkFallback(FALLBACK_SERVERS, (srv, ms) => fetchServerSources(srv, params, cleanId, ms), {
+        left, requestTimeoutMs, collect: collectSources, hasStreams: () => streams.length > 0, noteFailure, state,
+      });
+    }
+    const sawTimeout = state.sawTimeout;
+    const rateLimited = state.rateLimited;
+
+    // 3. "Auto" sources are master playlists (Reno: one 1600x900 variant, shown as 900p by the
+    //    site). Read each once, bounded by the budget: one variant -> its height, several ->
+    //    "Auto (up to X)"; unreadable -> stays "Auto".
+    if (autoRows.length && left() > 200) {
+      await Promise.all(autoRows.map((row) => labelAutoRow(row, Math.min(MASTER_PEEK_MS, left()))));
     }
 
     if (!streams.length) {
@@ -370,7 +458,7 @@ async function getStreams(tmdbId, mediaType, season, episode, opts) {
     // 4. Attach subtitles: prioritize embedded payload subtitles
     let subs = payloadSubs;
     if (!subs.length) {
-      subs = await timeout(fetchSubtitles(cleanId, type, s, ep), 2500).catch(() => []);
+      subs = await timeout(subsPromise, Math.max(1, Math.min(2500, left()))).catch(() => []);
     }
     for (const st of streams) st.subtitles = subs || [];
 
