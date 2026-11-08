@@ -197,9 +197,12 @@ async function getStreams(tmdbId, mediaType = "movie", season = 1, episode = 1, 
   return work;
 }
 
-// Split masters into variant rows when time allows. Streams from a companion are already split.
-async function splitVariants(result, startedAt) {
-  if (!result.ok || !result.streams.length || result.via === "companion") return result.ok ? result.streams : [];
+// Split masters into variant rows when time allows. Only the server's router asks for it
+// (opts.splitVariants): variant rows carry a base-URL placeholder that only the router resolves.
+// Streams from a companion are already split.
+async function splitVariants(result, startedAt, opts) {
+  if (!result.ok) return [];
+  if (!(opts && opts.splitVariants) || !result.streams.length || result.via === "companion") return result.streams;
   const left = startedAt ? LOOKUP_BUDGET_MS - (Date.now() - startedAt) : MAX_SPLIT_MS;
   if (left < MIN_SPLIT_MS) return result.streams;
   return expandHlsVariants(result.streams, Math.min(MAX_SPLIT_MS, left));
@@ -226,7 +229,7 @@ async function resolveStreams(tmdbId, normType, s, e, cacheKey, opts) {
     // so the client's retry is a hit instead of a second full lookup.
     if (result.late) {
       result.late
-        .then((late) => (late && late.ok && late.streams.length ? splitVariants(late, 0) : null))
+        .then((late) => (late && late.ok && late.streams.length ? splitVariants(late, 0, opts) : null))
         .then((lateStreams) => {
           if (lateStreams && lateStreams.length) {
             streamCache.set(cacheKey, sortByQuality(lateStreams), CACHE_TTL_MS);
@@ -236,7 +239,7 @@ async function resolveStreams(tmdbId, normType, s, e, cacheKey, opts) {
         .catch(() => {});
     }
 
-    const streams = sortByQuality(await splitVariants(result, startedAt));
+    const streams = sortByQuality(await splitVariants(result, startedAt, opts));
     const ttl = !result.ok ? FAILURE_TTL_MS : streams.length ? CACHE_TTL_MS : EMPTY_TTL_MS;
     streamCache.set(cacheKey, streams, ttl);
     console.log(`[FlyStream] ${streams.length} stream(s) for ${cacheKey}`);

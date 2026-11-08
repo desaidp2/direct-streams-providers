@@ -25,6 +25,11 @@ const fly = async (...args) => {
   flyArgs = args;
   if (flyMode === "hang") return new Promise(() => {});
   if (flyMode === "throw") throw new Error("boom");
+  if (flyMode === "variant") {
+    const { buildVariantUrl } = require("./src/shared/hls-variant-playlist");
+    const u = "https://flystream.net/source-hls/" + "cd".repeat(16) + "/asset/" + "V".repeat(30) + ".ts";
+    return [{ name: "fly-variant", url: buildVariantUrl(u, 5000000, 1920, 1080), quality: "1080p", subtitles: [] }];
+  }
   return [{ name: "fly", url: "https://fly/1", quality: "Auto", subtitles: [] }];
 };
 
@@ -159,6 +164,33 @@ async function run() {
   assert.strictEqual((await route("/companion/flystream/cookies", {}, "http://h", { clientAddress: "8.8.8.8" })).status, 200);
   delete process.env.COMPANION_ALLOW_PUBLIC;
   console.log("✓ companion routes: LAN-only gate (IPv4/IPv6/mapped/XFF), 403 before provider, no CORS, opt-out env");
+
+  // 11. Single-variant playlist route: allowlisted FlyStream variant URL only, no CR/LF injection
+  const okU = "https://flystream.net/source-hls/" + "ab".repeat(16) + "/asset/" + "T".repeat(40) + ".ts";
+  const pl = await route("/hls/flystream/variant.m3u8", { u: okU, b: "5000000", r: "1920x800" }, "http://h");
+  assert.strictEqual(pl.status, 200);
+  assert.strictEqual(pl.headers["Content-Type"], "application/vnd.apple.mpegurl");
+  assert.strictEqual(pl.body, "#EXTM3U\n#EXT-X-VERSION:4\n#EXT-X-STREAM-INF:BANDWIDTH=5000000,RESOLUTION=1920x800\n" + okU + "\n");
+  for (const bad of [
+    { u: "https://evil.example/x.ts", b: "1" },
+    { u: okU.replace("https://", "http://"), b: "1" },
+    { u: okU + "\n#EXTINF:1,\nhttps://evil.example/a.ts", b: "1" },
+    { u: okU.replace("/asset/", "/../"), b: "1" },
+    { u: okU, b: "12a" },
+    { u: okU, b: "1", r: "1920x800,URI=x" },
+    {},
+  ]) {
+    assert.strictEqual((await route("/hls/flystream/variant.m3u8", bad, "http://h")).status, 400, JSON.stringify(bad).slice(0, 60));
+  }
+  // /stream resolves the variant placeholder against the request's base URL
+  const { buildVariantUrl } = require("./src/shared/hls-variant-playlist");
+  flyMode = "variant";
+  const vs = JSON.parse((await route("/stream/movie/tmdb:999.json", {}, "http://pi.local:7070")).body).streams;
+  const flyRow = vs.find((s) => s.name.includes("fly-variant"));
+  assert(flyRow && flyRow.url.startsWith("http://pi.local:7070/hls/flystream/variant.m3u8?u="), "placeholder resolved in /stream");
+  assert(!JSON.stringify(vs).includes("dsp-variant-base:"), "no placeholder leaks to clients");
+  void buildVariantUrl;
+  console.log("✓ variant playlist route: allowlist + no injection; /stream resolves variant URLs to its base");
 
   console.log("\n🎉 Offline router tests passed\n");
   process.exit(0); // the stub flystream promise never settles

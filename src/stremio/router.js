@@ -20,6 +20,7 @@ const { getStreams: getFlyStreamStreams } = require("../flystream/index");
 const { CORS_HEADERS } = require("./http-constants");
 const { handleSubtitleProxy } = require("./subtitle-proxy");
 const { companionAllowed } = require("./client-address-private-network-check");
+const { VARIANT_PATH, resolveVariantUrl, renderVariantPlaylist } = require("../shared/hls-variant-playlist");
 
 // Companion responses carry live session cookies: no CORS headers (Nuvio's native fetch does not
 // need them, and `Access-Control-Allow-Origin: *` would let any web page a LAN browser opens read
@@ -96,7 +97,8 @@ const MANIFEST = {
 const PROVIDERS = [
   { tag: "Movy", getStreams: getMovyStreams },
   { tag: "7Movies", getStreams: get7MoviesStreams },
-  { tag: "FlyStream", getStreams: getFlyStreamStreams },
+  // splitVariants: one row per HLS quality + Auto (variant URLs resolved against baseUrl below)
+  { tag: "FlyStream", getStreams: (id, type, s, e) => getFlyStreamStreams(id, type, s, e, { splitVariants: true }) },
 ];
 
 // Each provider gets this long; a late provider is dropped from the response instead of
@@ -191,7 +193,7 @@ function toStremioStream(s, providerTag, baseUrl, subMemo) {
   return {
     name: `[DirectStreams]\n${s.name || providerTag}`,
     title: `${s.title || s.quality || "Stream"}\n${directTag}${subCount}`,
-    url: s.url,
+    url: resolveVariantUrl(s.url, baseUrl),
     behaviorHints: s.behaviorHints || {
       notWebReady: true,
       proxyHeaders: {
@@ -341,12 +343,32 @@ async function route(path, query = {}, baseUrl = "", requestInfo = {}) {
     const season = query.season ? parseInt(query.season, 10) : 1;
     const episode = query.episode ? parseInt(query.episode, 10) : 1;
     const streams = tmdbId
-      ? await getFlyStreamStreams(tmdbId, mediaType, season, episode, { skipCompanion: true, meta: companionMeta(query) })
+      ? await getFlyStreamStreams(tmdbId, mediaType, season, episode, {
+          skipCompanion: true,
+          splitVariants: true,
+          meta: companionMeta(query),
+        })
       : [];
+    // Fresh objects with resolved variant URLs; the cached originals keep the placeholder.
+    const out = streams.map((s) => {
+      const url = resolveVariantUrl(s.url, baseUrl);
+      return url === s.url ? s : Object.assign({}, s, { url });
+    });
     return {
       status: 200,
       headers: COMPANION_HEADERS,
-      body: JSON.stringify({ ok: streams.length > 0, streams: streams }),
+      body: JSON.stringify({ ok: out.length > 0, streams: out }),
+    };
+  }
+
+  // Route 5b: single-variant HLS master for FlyStream's ".ts"-named variant playlists. Echoes an
+  // allowlisted URL only; no upstream request (see shared/hls-variant-playlist.js).
+  if (cleanPath === VARIANT_PATH) {
+    const r = renderVariantPlaylist(query);
+    return {
+      status: r.status,
+      headers: { ...CORS_HEADERS, "Content-Type": "application/vnd.apple.mpegurl", "Cache-Control": "no-store" },
+      body: r.body,
     };
   }
 

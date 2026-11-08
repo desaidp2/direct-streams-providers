@@ -301,13 +301,15 @@ async function runTests() {
 
   // --- HLS variant split (masters as observed on the site, 2026-11-08)
   const { qualityFromResolution } = require("./src/flystream/flystream-hls-variant-expansion.js");
+  // FlyStream's real variant shape: a ".ts"-named playlist under /source-hls/<32 hex>/asset/
+  const TS = (tok) => "https://flystream.net/source-hls/" + "0123456789abcdef".repeat(2) + "/asset/" + tok + "_TOKEN-x.ts";
   const qtab = [[3840, 2160, "4K"], [1920, 1080, "1080p"], [1280, 720, "720p"], [1920, 800, "1080p"], [1280, 534, "720p"],
     [640, 266, "360p"], [854, 480, "480p"], [2560, 1440, "1440p"], [null, 1080, "1080p"], [null, null, null]];
   for (const [w, h, q] of qtab) assert.strictEqual(qualityFromResolution(w, h), q, `${w}x${h}`);
 
-  const M4K = "#EXTM3U\n#EXT-X-VERSION:4\n#EXT-X-STREAM-INF:BANDWIDTH=16000000,RESOLUTION=3840x2160\nhttps://flystream.net/v/2160.m3u8\n" +
-    "#EXT-X-STREAM-INF:BANDWIDTH=5000000,RESOLUTION=1920x1080\nhttps://flystream.net/v/1080.m3u8\n" +
-    "#EXT-X-STREAM-INF:BANDWIDTH=2800000,RESOLUTION=1280x720\nhttps://flystream.net/v/720.m3u8\n";
+  const M4K = "#EXTM3U\n#EXT-X-VERSION:4\n#EXT-X-STREAM-INF:BANDWIDTH=16000000,RESOLUTION=3840x2160\n" + TS("a2160") + "\n" +
+    "#EXT-X-STREAM-INF:BANDWIDTH=5000000,RESOLUTION=1920x1080\n" + TS("a1080") + "\n" +
+    "#EXT-X-STREAM-INF:BANDWIDTH=2800000,RESOLUTION=1280x720\n" + TS("a0720") + "\n";
   const MWIDE = '#EXTM3U\n#EXT-X-INDEPENDENT-SEGMENTS\n#EXT-X-STREAM-INF:BANDWIDTH=810647,CODECS="mp4a.40.2,avc1.42c015",RESOLUTION=640x266,FRAME-RATE=24\nhttps://flystream.net/w/360.m3u8\n' +
     '#EXT-X-STREAM-INF:BANDWIDTH=2540758,CODECS="mp4a.40.2,avc1.64001f",RESOLUTION=1280x534,FRAME-RATE=24\nhttps://flystream.net/w/720.m3u8\n' +
     '#EXT-X-STREAM-INF:BANDWIDTH=4629855,CODECS="mp4a.40.2,avc1.640028",RESOLUTION=1920x800,FRAME-RATE=24\nhttps://flystream.net/w/1080.m3u8\n';
@@ -326,21 +328,30 @@ async function runTests() {
     { url: "/source-hls/au/index.m3u8?cv=u", quality: "1080p", videoCodec: "h264", name: "Film · 1080p", sourceBucket: "s3" },
   ] };
   delete global.challengeBrowser;
-  const split = await getStreams(7070, "movie", 1, 1, { skipCompanion: true });
-  const rows = split.map((s) => `${s.name}|${s.quality}|${s.url.replace("https://flystream.net", "")}`);
+  // Without the router's splitVariants flag nothing is split and no master is fetched.
+  const plain = await getStreams(7069, "movie", 1, 1, { skipCompanion: true });
+  assert.strictEqual(plain.length, 3);
+  assert.strictEqual(global.__masterHits.length, 0, "no split without splitVariants");
+
+  const { VARIANT_BASE_TOKEN, resolveVariantUrl } = require("./src/shared/hls-variant-playlist.js");
+  const split = await getStreams(7070, "movie", 1, 1, { skipCompanion: true, splitVariants: true });
+  const short = (u) => u.startsWith(VARIANT_BASE_TOKEN) ? "VAR:" + decodeURIComponent(/[?&]u=([^&]+)/.exec(u)[1]).split("/asset/")[1] : u.replace("https://flystream.net", "");
+  const rows = split.map((s) => `${s.name}|${s.quality}|${short(s.url)}`);
   assert.deepStrictEqual(rows, [
-    "FlyStream S1 - 4K|4K|/v/2160.m3u8",
-    "FlyStream S1 - 1080p|1080p|/v/1080.m3u8",
+    "FlyStream S1 - 4K|4K|VAR:a2160_TOKEN-x.ts",
+    "FlyStream S1 - 1080p|1080p|VAR:a1080_TOKEN-x.ts",
     "FlyStream S2 - 1080p|1080p|/w/1080.m3u8",
     "FlyStream S3 - 1080p|1080p|/source-hls/au/index.m3u8?cv=u",
-    "FlyStream S1 - 720p|720p|/v/720.m3u8",
+    "FlyStream S1 - 720p|720p|VAR:a0720_TOKEN-x.ts",
     "FlyStream S2 - 720p|720p|/w/720.m3u8",
     "FlyStream S2 - 360p|360p|/w/360.m3u8",
     "FlyStream S1 - Auto|Auto|/source-hls/k4/index.m3u8?dseg=1",
     "FlyStream S2 - Auto|Auto|/source-hls/wd/index.m3u8?cv=t",
-  ], "variants split, widescreen labelled by width, separate-audio master kept whole, Auto rows last");
-  assert.strictEqual(split[0].title.split("\n")[1], "4K · 3840×2160 · H264");
+  ], "split; .ts variants wrapped, .m3u8 variants direct, widescreen by width, separate-audio kept whole, Auto last");
+  assert.strictEqual(split[0].title, "FlyStream Film\n4K · 3840×2160 · H264", "site quality suffix dropped from line 1");
   assert.strictEqual(split[7].title.split("\n")[1], "Auto (up to 4K) · H264");
+  assert(/[?&]b=16000000&r=3840x2160$/.test(split[0].url), "variant URL carries bandwidth + resolution");
+  assert(resolveVariantUrl(split[0].url, "http://pi:7070/").startsWith("http://pi:7070/hls/flystream/variant.m3u8?u="));
   for (const s of split) {
     assert.strictEqual(s.behaviorHints.proxyHeaders.request.Referer, "https://flystream.net/", "variants keep playback headers");
     assert.strictEqual(s.headers, s.behaviorHints.proxyHeaders.request);
@@ -352,7 +363,7 @@ async function runTests() {
   // Not enough of the 9 s budget left after the API call -> no split (one row per source).
   global.__masterHits = [];
   global.__apiClockJump = 7600;
-  const late = await getStreams(7071, "movie", 1, 1, { skipCompanion: true });
+  const late = await getStreams(7071, "movie", 1, 1, { skipCompanion: true, splitVariants: true });
   global.__restoreClock();
   delete global.__apiClockJump;
   assert.strictEqual(late.length, 3, "budget exhausted -> masters left whole");
@@ -363,7 +374,7 @@ async function runTests() {
   global.__masterHits = [];
   process.env.FLYSTREAM_COMPANION_URL = "http://pi.test:7070";
   global.__companion = () => Promise.resolve(json({ ok: true, streams: [{ name: "FlyStream S1 - 4K", url: "https://flystream.net/source-hls/k4/index.m3u8?dseg=1", quality: "4K", title: "x" }] }));
-  const viaComp = await getStreams(7072, "movie");
+  const viaComp = await getStreams(7072, "movie", 1, 1, { splitVariants: true });
   assert.strictEqual(viaComp.length, 1);
   assert.strictEqual(global.__masterHits.length, 0, "companion streams are not re-split on the client");
   delete process.env.FLYSTREAM_COMPANION_URL;

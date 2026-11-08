@@ -15,6 +15,16 @@
 
 const { fetchWithTimeout } = require("../shared/provider-utils");
 const { parseMasterPlaylist } = require("../shared/hls-master-playlist-parser");
+const { FLYSTREAM_VARIANT_RE, buildVariantUrl } = require("../shared/hls-variant-playlist");
+
+// Row URL for one variant: a real .m3u8 is used as is; FlyStream's disguised ".ts" variant playlists
+// go through the server's single-variant master (see shared/hls-variant-playlist.js); any other
+// shape returns null and the master is left whole.
+function variantRowUrl(v) {
+  if (/\.m3u8(?:[?#]|$)/i.test(v.url)) return v.url;
+  if (FLYSTREAM_VARIANT_RE.test(v.url)) return buildVariantUrl(v.url, v.bandwidth, v.width, v.height);
+  return null;
+}
 
 const SEPARATE_AUDIO_RE = /#EXT-X-MEDIA:[^\r\n]*TYPE=AUDIO[^\r\n]*URI=/;
 
@@ -34,11 +44,13 @@ function namePrefix(name) {
   return i > 0 ? name.slice(0, i) : name;
 }
 
-// Title is "FlyStream <name>\n<quality> · <codec> · <size>"; keep line 1, rebuild line 2.
+// Title is "FlyStream <name> · <quality>\n<quality> · <codec> · <size>". Line 1 loses the site's
+// quality suffix (it named the master, not this row); line 2 is rebuilt for the row.
 function titleFor(stream, label, extra) {
   const lines = String(stream.title || "").split("\n");
+  const head = lines[0].replace(/ · (?:\d{3,4}p|4K|Auto)$/i, "");
   const rest = (lines[1] || "").split(" · ").slice(1);
-  return [lines[0], [label].concat(extra || [], rest).filter(Boolean).join(" · ")].join("\n");
+  return [head, [label].concat(extra || [], rest).filter(Boolean).join(" · ")].join("\n");
 }
 
 async function expandStream(stream, timeoutMs) {
@@ -50,11 +62,14 @@ async function expandStream(stream, timeoutMs) {
     if (SEPARATE_AUDIO_RE.test(text)) return [stream];
     const variants = parseMasterPlaylist(text, stream.url).filter((v) => v.url && (v.width || v.height));
     if (variants.length < 2) return [stream];
+    const urls = variants.map(variantRowUrl);
+    if (urls.some((u) => !u)) return [stream];
 
     const prefix = namePrefix(stream.name);
     const rows = [];
     let top = null;
-    for (const v of variants) {
+    for (let i = 0; i < variants.length; i++) {
+      const v = variants[i];
       const q = qualityFromResolution(v.width, v.height);
       if (!q) continue;
       if (!top) top = q;
@@ -62,7 +77,7 @@ async function expandStream(stream, timeoutMs) {
         Object.assign({}, stream, {
           name: `${prefix} - ${q}`,
           title: titleFor(stream, q, [v.width && v.height ? `${v.width}×${v.height}` : ""]),
-          url: v.url,
+          url: urls[i],
           quality: q,
         })
       );
