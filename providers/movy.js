@@ -1,6 +1,5 @@
 /**
  * movy - Built from src/movy/
- * Generated: 2026-11-08T09:55:24.987Z
  */
 var __getOwnPropNames = Object.getOwnPropertyNames;
 var __commonJS = (cb, mod) => function __require() {
@@ -210,6 +209,17 @@ var require_provider_utils = __commonJS({
         }
       );
     }
+    function fetchWithTimeout(url, init, ms, label) {
+      if (typeof AbortController !== "function" || typeof setTimeout !== "function") {
+        return withTimeout2(fetch(url, init), ms, label);
+      }
+      const controller = new AbortController();
+      const opts = Object.assign({}, init || {}, { signal: controller.signal });
+      return withTimeout2(fetch(url, opts), ms, label).catch((err) => {
+        controller.abort();
+        throw err;
+      });
+    }
     var TtlCache2 = class {
       constructor(limit, defaultTtlMs) {
         this.limit = limit;
@@ -245,7 +255,7 @@ var require_provider_utils = __commonJS({
         return this.map.size;
       }
     };
-    module2.exports = { QUALITY_ORDER, qualityRank, sortByQuality: sortByQuality2, withTimeout: withTimeout2, TtlCache: TtlCache2 };
+    module2.exports = { QUALITY_ORDER, qualityRank, sortByQuality: sortByQuality2, withTimeout: withTimeout2, fetchWithTimeout, TtlCache: TtlCache2 };
   }
 });
 

@@ -92,20 +92,20 @@ async function run() {
   assert.strictEqual(manifest.id, "community.directstreamsproviders");
 
   // 6. Companion endpoints
-  const compRes = await route("/companion/flystream", { tmdbId: "3", type: "movie" }, "http://h");
+  const compRes = await route("/companion/flystream", { tmdbId: "3", type: "movie" }, "http://h", { clientAddress: "192.168.1.20" });
   assert.strictEqual(compRes.status, 200);
   const compData = JSON.parse(compRes.body);
   assert.strictEqual(compData.ok, true);
   assert(compData.streams.length > 0);
 
-  const cookieRes = await route("/companion/flystream/cookies", {}, "http://h");
+  const cookieRes = await route("/companion/flystream/cookies", {}, "http://h", { clientAddress: "192.168.1.20" });
   assert.strictEqual(cookieRes.status, 200);
   console.log("✓ companion endpoints /companion/flystream and /cookies OK");
   console.log("✓ 400 on malformed path / non-http subtitle url; subtitles + manifest routes OK");
 
   // 7. Companion route passes skipCompanion (server must never query its own companion)
   flyArgs = null;
-  await route("/companion/flystream", { tmdbId: "77", type: "movie" }, "http://h");
+  await route("/companion/flystream", { tmdbId: "77", type: "movie" }, "http://h", { clientAddress: "192.168.1.20" });
   assert(flyArgs && flyArgs[4] && flyArgs[4].skipCompanion === true, "companion route must pass skipCompanion");
   console.log("✓ /companion/flystream calls getStreams with skipCompanion");
 
@@ -124,6 +124,34 @@ async function run() {
   assert.strictEqual(m1, m2);
   assert(Array.isArray(JSON.parse(m1).scrapers), "Nuvio scrapers merged into manifest");
   console.log("✓ manifest served from mtime cache with Nuvio scrapers merged");
+
+  // 10. Companion routes are LAN-only and never send CORS headers
+  const gate = require("./src/stremio/client-address-private-network-check");
+  for (const ip of ["127.0.0.1", "::1", "::ffff:192.168.1.5", "10.0.0.9", "172.16.0.1", "172.31.255.1",
+    "192.168.0.1", "169.254.1.1", "100.64.0.1", "100.127.1.1", "fd12:3456::1", "fe80::1", "[::1]"]) {
+    assert(gate.isPrivateAddress(ip), ip + " should be private");
+  }
+  for (const ip of ["8.8.8.8", "172.32.0.1", "172.15.0.1", "100.128.0.1", "2001:4860::8888", "", undefined, "not-an-ip", "256.1.1.1"]) {
+    assert(!gate.isPrivateAddress(ip), ip + " should be public");
+  }
+  assert.strictEqual(gate.effectiveClientAddress("127.0.0.1", "192.168.1.9, 8.8.8.8"), "8.8.8.8", "rightmost XFF hop wins");
+  assert.strictEqual(gate.effectiveClientAddress("192.168.1.2", undefined), "192.168.1.2");
+  let callsBefore = calls.fly;
+  for (const p of ["/companion/flystream", "/api/flystream/streams", "/companion/flystream/cookies"]) {
+    for (const info of [{ clientAddress: "8.8.8.8" }, {}, undefined]) {
+      const r = await route(p, { tmdbId: "5" }, "http://h", info);
+      assert.strictEqual(r.status, 403, p + " must refuse a public / unknown client");
+    }
+  }
+  assert.strictEqual(calls.fly, callsBefore, "a refused request must not reach the provider");
+  const lanRes = await route("/companion/flystream/cookies", {}, "http://h", { clientAddress: "10.1.2.3" });
+  assert.strictEqual(lanRes.status, 200);
+  assert(!("Access-Control-Allow-Origin" in lanRes.headers), "companion routes must not send CORS headers");
+  assert.strictEqual(lanRes.headers["Cache-Control"], "no-store");
+  process.env.COMPANION_ALLOW_PUBLIC = "1";
+  assert.strictEqual((await route("/companion/flystream/cookies", {}, "http://h", { clientAddress: "8.8.8.8" })).status, 200);
+  delete process.env.COMPANION_ALLOW_PUBLIC;
+  console.log("✓ companion routes: LAN-only gate (IPv4/IPv6/mapped/XFF), 403 before provider, no CORS, opt-out env");
 
   console.log("\n🎉 Offline router tests passed\n");
   process.exit(0); // the stub flystream promise never settles

@@ -199,6 +199,9 @@ When running the `flystream` scraper in Nuvio TV:
   FLYSTREAM_COMPANION_URL=http://<YOUR_LAN_IP>:7070
   ```
 - Nuvio TV queries `/companion/flystream?tmdbId=...&type=...` over LAN, retrieves the stream URLs with the server's session cookies, and passes them to ExoPlayer for playback.
+- Install the Nuvio repo from the companion (`http://<YOUR_LAN_IP>:7070/manifest.json`), not from GitHub: the companion URL is injected into `/providers/flystream.js` when the server serves it, so a GitHub-installed copy has no companion configured and makes no companion request.
+- Several companions: comma-separate them; they are queried in parallel and the first with streams wins (6 s budget).
+- The companion routes are **LAN-only** (403 for public clients) and send no CORS headers, because they return live session cookies. Stremio / WuPlay never call them; they use `/stream/...`, which is unchanged. Opt out with `COMPANION_ALLOW_PUBLIC=1`.
 
 ---
 

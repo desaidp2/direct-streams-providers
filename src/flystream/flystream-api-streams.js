@@ -15,7 +15,7 @@
  * Hermes / QuickJS safe: no URL / URLSearchParams / crypto globals.
  */
 
-const { withTimeout } = require("../shared/provider-utils");
+const { withTimeout, fetchWithTimeout } = require("../shared/provider-utils");
 
 const API_BASE = "https://flystream.net";
 const BROWSER_UA =
@@ -210,7 +210,7 @@ function getCompanionCandidates() {
 async function queryCompanion(host, qs) {
   const endpoint = `${host}/companion/flystream?${qs}`;
   console.log(`[FlyStream] Querying companion: ${endpoint}`);
-  const res = await withTimeout(fetch(endpoint), COMPANION_TIMEOUT_MS, "FlyStream Companion");
+  const res = await fetchWithTimeout(endpoint, undefined, COMPANION_TIMEOUT_MS, "FlyStream Companion");
   if (!res || !res.ok) throw new Error(`HTTP ${res && res.status}`);
   const data = await res.json();
   if (!data || !data.ok || !Array.isArray(data.streams) || data.streams.length === 0) {
@@ -220,7 +220,9 @@ async function queryCompanion(host, qs) {
 }
 
 // First success wins (hand-rolled Promise.any: not available on every QuickJS / Hermes build).
-// Worst case is one COMPANION_TIMEOUT_MS for all hosts together, not one per host.
+// On Node / Workers the hosts run concurrently: worst case is one COMPANION_TIMEOUT_MS for all
+// hosts together, not one per host. On Nuvio the native fetch is synchronous, so the hosts are
+// effectively tried in list order: put the usual companion first in FLYSTREAM_COMPANION_URL.
 function firstSuccess(promises) {
   return new Promise((resolve) => {
     let pending = promises.length;
@@ -273,7 +275,7 @@ async function fetchApiStreams(query, opts) {
 
   const url = buildApiUrl(buildApiParams(query));
   try {
-    const res = await withTimeout(fetch(url, { headers: API_HEADERS }), API_TIMEOUT_MS, "FlyStream API");
+    const res = await fetchWithTimeout(url, { headers: API_HEADERS }, API_TIMEOUT_MS, "FlyStream API");
     if (res.status !== 200) return { ok: false, reason: `HTTP ${res.status}` };
     const data = JSON.parse(await res.text());
     return { ok: true, streams: mapApiStreams(data, query.title) };

@@ -40,6 +40,7 @@ function loadEnv() {
 loadEnv();
 
 const { route, CORS_HEADERS } = require("./src/stremio/router");
+const { effectiveClientAddress } = require("./src/stremio/client-address-private-network-check");
 
 function hasBrowserEngine() {
   try {
@@ -107,7 +108,8 @@ const server = http.createServer(async (req, res) => {
   console.log(`[HTTP] ${req.method} ${pathname}`);
 
   try {
-    const response = await route(pathname, query, baseUrl);
+    const clientAddress = effectiveClientAddress(req.socket.remoteAddress, req.headers["x-forwarded-for"]);
+    const response = await route(pathname, query, baseUrl, { clientAddress });
     res.writeHead(response.status, response.headers);
     if (req.method === "HEAD") {
       res.end();

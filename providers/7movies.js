@@ -1,6 +1,5 @@
 /**
  * 7movies - Built from src/7movies/
- * Generated: 2026-11-08T09:55:24.909Z
  */
 var __getOwnPropNames = Object.getOwnPropertyNames;
 var __commonJS = (cb, mod) => function __require() {
@@ -46,7 +45,7 @@ var require_provider_utils = __commonJS({
     function sortByQuality2(streams) {
       return streams.sort((a, b) => qualityRank(b.quality) - qualityRank(a.quality));
     }
-    function withTimeout2(promise, ms, label) {
+    function withTimeout(promise, ms, label) {
       if (typeof setTimeout !== "function")
         return promise;
       let timer;
@@ -65,6 +64,17 @@ var require_provider_utils = __commonJS({
           throw err;
         }
       );
+    }
+    function fetchWithTimeout2(url, init, ms, label) {
+      if (typeof AbortController !== "function" || typeof setTimeout !== "function") {
+        return withTimeout(fetch(url, init), ms, label);
+      }
+      const controller = new AbortController();
+      const opts = Object.assign({}, init || {}, { signal: controller.signal });
+      return withTimeout(fetch(url, opts), ms, label).catch((err) => {
+        controller.abort();
+        throw err;
+      });
     }
     var TtlCache2 = class {
       constructor(limit, defaultTtlMs) {
@@ -101,7 +111,7 @@ var require_provider_utils = __commonJS({
         return this.map.size;
       }
     };
-    module2.exports = { QUALITY_ORDER, qualityRank, sortByQuality: sortByQuality2, withTimeout: withTimeout2, TtlCache: TtlCache2 };
+    module2.exports = { QUALITY_ORDER, qualityRank, sortByQuality: sortByQuality2, withTimeout, fetchWithTimeout: fetchWithTimeout2, TtlCache: TtlCache2 };
   }
 });
 
@@ -139,7 +149,7 @@ var require_hls_master_playlist_parser = __commonJS({
 // src/7movies/index.js
 var UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36";
 var MEDIA_UA = "okhttp/4.12.0";
-var { sortByQuality, withTimeout, TtlCache } = require_provider_utils();
+var { sortByQuality, fetchWithTimeout, TtlCache } = require_provider_utils();
 var { parseMasterPlaylist } = require_hls_master_playlist_parser();
 var VIDLINK_API = "https://vidlink.pro/api/b";
 var ENC_API = "https://enc-dec.app/api/enc-vidlink";
@@ -185,7 +195,7 @@ function fetchWithRetry(url, headers, retries = 2, baseDelay = 600) {
     for (let attempt = 0; attempt <= retries; attempt++) {
       let res;
       try {
-        res = yield withTimeout(fetch(url, { headers: headers || {} }), REQUEST_TIMEOUT_MS, "7Movies fetch");
+        res = yield fetchWithTimeout(url, { headers: headers || {} }, REQUEST_TIMEOUT_MS, "7Movies fetch");
       } catch (err) {
         if (attempt >= retries)
           throw err;

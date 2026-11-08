@@ -15,7 +15,7 @@ const UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36";
 const MEDIA_UA = "okhttp/4.12.0";
 
-const { sortByQuality, withTimeout, TtlCache } = require("../shared/provider-utils");
+const { sortByQuality, fetchWithTimeout, TtlCache } = require("../shared/provider-utils");
 const { parseMasterPlaylist } = require("./hls-master-playlist-parser");
 
 const VIDLINK_API = "https://vidlink.pro/api/b";
@@ -72,7 +72,7 @@ async function fetchWithRetry(url, headers, retries = 2, baseDelay = 600) {
   for (let attempt = 0; attempt <= retries; attempt++) {
     let res;
     try {
-      res = await withTimeout(fetch(url, { headers: headers || {} }), REQUEST_TIMEOUT_MS, "7Movies fetch");
+      res = await fetchWithTimeout(url, { headers: headers || {} }, REQUEST_TIMEOUT_MS, "7Movies fetch");
     } catch (err) {
       if (attempt >= retries) throw err;
       await sleep(baseDelay * Math.pow(2, attempt) + Math.random() * 200);

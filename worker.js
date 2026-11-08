@@ -25,7 +25,9 @@ export default {
     const url = new URL(request.url);
     const query = Object.fromEntries(url.searchParams.entries());
     const baseUrl = `${url.protocol}//${url.host}`;
-    const result = await route(url.pathname, query, baseUrl);
+    // Companion routes are LAN-only; on Workers the client is always a public address.
+    const clientAddress = request.headers.get("cf-connecting-ip") || "";
+    const result = await route(url.pathname, query, baseUrl, { clientAddress });
 
     return new Response(request.method === "HEAD" ? null : result.body, {
       status: result.status,

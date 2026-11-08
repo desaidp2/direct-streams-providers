@@ -94,7 +94,9 @@ async function buildProvider(providerName) {
             sourcemap: false,
             external: EXTERNAL_MODULES,
             banner: {
-                js: `/**\n * ${providerName} - Built from src/${providerName}/\n * Generated: ${new Date().toISOString()}\n */`
+                // No timestamp: identical sources give byte-identical output, so a rebuild
+                // no longer rewrites every providers/*.js (and its Nuvio sha256) for nothing.
+                js: `/**\n * ${providerName} - Built from src/${providerName}/\n */`
             },
             define: {
                 "__FLYSTREAM_COMPANION_URL__": '""'

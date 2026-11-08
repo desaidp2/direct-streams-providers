@@ -19,6 +19,13 @@ const { getStreams: getMovyStreams, fetchSubtitles: fetchMovySubtitles } = requi
 const { getStreams: getFlyStreamStreams } = require("../flystream/index");
 const { CORS_HEADERS } = require("./http-constants");
 const { handleSubtitleProxy } = require("./subtitle-proxy");
+const { companionAllowed } = require("./client-address-private-network-check");
+
+// Companion responses carry live session cookies: no CORS headers (Nuvio's native fetch does not
+// need them, and `Access-Control-Allow-Origin: *` would let any web page a LAN browser opens read
+// them), and never cached by intermediaries.
+const COMPANION_HEADERS = { "Content-Type": "application/json", "Cache-Control": "no-store" };
+const COMPANION_PATHS = new Set(["/companion/flystream", "/api/flystream/streams", "/companion/flystream/cookies"]);
 
 // Read-through file cache keyed by path, invalidated by mtime: one stat() per request instead of
 // a full read + parse (+ regex rewrite for providers). A rebuild (new mtime) is picked up live.
@@ -62,7 +69,7 @@ function injectCompanionUrl(code, url) {
 
 const MANIFEST = {
   id: "community.directstreamsproviders",
-  version: "1.0.10",
+  version: "1.0.11",
   name: "Direct Streams Providers",
   description: "Fast direct streams from 7Movies, Movy & FlyStream up to 4K with multilingual subtitles (No Debrid Needed)",
   resources: ["stream", "subtitles"],
@@ -267,7 +274,7 @@ async function handleSubtitles(type, rawId, baseUrl) {
  * @param {string} [baseUrl=""] - Base URL of the current server (for generating absolute URLs)
  * @returns {Promise<{ status: number, headers: object, body: string }>}
  */
-async function route(path, query = {}, baseUrl = "") {
+async function route(path, query = {}, baseUrl = "", requestInfo = {}) {
   // Strip trailing slashes and decode (a malformed %-escape is a client error, not a 500)
   let cleanPath;
   try {
@@ -312,6 +319,11 @@ async function route(path, query = {}, baseUrl = "") {
     };
   }
 
+  // Companion routes: private-network clients only (see client-address-private-network-check.js).
+  if (COMPANION_PATHS.has(cleanPath) && !companionAllowed(requestInfo.clientAddress)) {
+    return { status: 403, headers: COMPANION_HEADERS, body: JSON.stringify({ error: "Companion is LAN-only" }) };
+  }
+
   // Route 5: Companion endpoint for FlyStream (used by client-side QuickJS / Nuvio)
   if (cleanPath === "/companion/flystream" || cleanPath === "/api/flystream/streams") {
     const tmdbId = query.tmdbId || query.id;
@@ -321,7 +333,7 @@ async function route(path, query = {}, baseUrl = "") {
     const streams = tmdbId ? await getFlyStreamStreams(tmdbId, mediaType, season, episode, { skipCompanion: true }) : [];
     return {
       status: 200,
-      headers: CORS_HEADERS,
+      headers: COMPANION_HEADERS,
       body: JSON.stringify({ ok: streams.length > 0, streams: streams }),
     };
   }
@@ -333,7 +345,7 @@ async function route(path, query = {}, baseUrl = "") {
     const userAgent = cb && typeof cb.getUserAgent === "function" ? await cb.getUserAgent() : "";
     return {
       status: 200,
-      headers: CORS_HEADERS,
+      headers: COMPANION_HEADERS,
       body: JSON.stringify({ ok: !!cookies, cookies: cookies, userAgent: userAgent }),
     };
   }

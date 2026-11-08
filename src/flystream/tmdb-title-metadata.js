@@ -8,7 +8,7 @@
  * `tmdbId` alone. Results (including misses) are cached so a replay costs no request.
  */
 
-const { withTimeout, TtlCache } = require("../shared/provider-utils");
+const { fetchWithTimeout, TtlCache } = require("../shared/provider-utils");
 
 const TMDB_PROXY = "https://db.wecollege.net/3";
 const META_TIMEOUT_MS = 2000;
@@ -39,8 +39,9 @@ async function fetchTitleMetadata(tmdbId, mediaType) {
   let meta = {};
   try {
     const url = `${TMDB_PROXY}/${mediaType}/${encodeURIComponent(tmdbId)}?append_to_response=external_ids`;
-    const res = await withTimeout(
-      fetch(url, { headers: { "User-Agent": "Mozilla/5.0", Accept: "application/json" } }),
+    const res = await fetchWithTimeout(
+      url,
+      { headers: { "User-Agent": "Mozilla/5.0", Accept: "application/json" } },
       META_TIMEOUT_MS,
       "FlyStream TMDB meta"
     );

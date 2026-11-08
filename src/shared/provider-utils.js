@@ -1,7 +1,8 @@
 /**
  * Shared helpers for every provider (bundled into each providers/<name>.js by build.js).
  *
- * Hermes / QuickJS safe: no AbortController, Buffer or Node built-ins are required.
+ * Hermes / QuickJS safe: no AbortController, Buffer or Node built-ins are required
+ * (fetchWithTimeout uses AbortController only when the runtime has one).
  */
 
 const QUALITY_ORDER = {
@@ -51,6 +52,33 @@ function withTimeout(promise, ms, label) {
 }
 
 /**
+ * fetch() bounded by `ms`. Where the runtime has AbortController (Node 17.3+, browsers,
+ * Workers) the request itself is aborted at the deadline, so a stalled upstream no longer
+ * holds its socket and response buffers open after the caller has given up. On runtimes
+ * without it this degrades to withTimeout: same latency bound, the request just finishes
+ * in the background as before.
+ *
+ * Nuvio (Android TV, QuickJS): the plugin runtime polyfills AbortController, but its fetch
+ * wraps a synchronous `__native_fetch`, checking `signal.aborted` only before and after the
+ * native call. No timer can fire during that call, so neither the timeout nor the abort can
+ * cut a Nuvio request short; passing the signal is harmless there. The bound and the
+ * socket release apply on Node (server.js, the Pi companion) and Workers.
+ */
+function fetchWithTimeout(url, init, ms, label) {
+  if (typeof AbortController !== "function" || typeof setTimeout !== "function") {
+    return withTimeout(fetch(url, init), ms, label);
+  }
+  // One timer (withTimeout's): on its rejection the request is aborted, so callers still see
+  // the labelled "<label> <ms>ms" error rather than a bare AbortError.
+  const controller = new AbortController();
+  const opts = Object.assign({}, init || {}, { signal: controller.signal });
+  return withTimeout(fetch(url, opts), ms, label).catch((err) => {
+    controller.abort();
+    throw err;
+  });
+}
+
+/**
  * Bounded LRU cache with per-entry TTL.
  * get/set/delete are O(1): a Map keeps insertion order, and a hit re-inserts the key
  * so eviction drops the least recently used entry (the old helper evicted FIFO, so a
@@ -94,4 +122,4 @@ class TtlCache {
   }
 }
 
-module.exports = { QUALITY_ORDER, qualityRank, sortByQuality, withTimeout, TtlCache };
+module.exports = { QUALITY_ORDER, qualityRank, sortByQuality, withTimeout, fetchWithTimeout, TtlCache };

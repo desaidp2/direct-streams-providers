@@ -3,7 +3,7 @@
  * and the Movy mvm1 byte codecs. Run: node test-offline-units.js
  */
 const assert = require("assert");
-const { qualityRank, sortByQuality, withTimeout, TtlCache } = require("./src/shared/provider-utils");
+const { qualityRank, sortByQuality, withTimeout, fetchWithTimeout, TtlCache } = require("./src/shared/provider-utils");
 const { parseMasterPlaylist } = require("./src/7movies/hls-master-playlist-parser");
 const { b64decode, utf8decode, keystream, decryptSources } = require("./src/movy/mvm1-byte-codecs");
 
@@ -97,6 +97,38 @@ async function run() {
   assert.strictEqual(decryptSources('"' + enc + '"', "seed-abc", "872585"), json);
   assert.throws(() => decryptSources(enc, "wrong-seed", "872585"), /magic mismatch/);
   console.log("✓ decryptSources round-trips and rejects a wrong seed");
+
+  // --- fetchWithTimeout aborts the underlying request (local server that never answers)
+  const http = require("http");
+  let open = 0;
+  const hang = http.createServer((req) => {
+    open++;
+    req.socket.on("close", () => open--);
+  });
+  await new Promise((r) => hang.listen(0, "127.0.0.1", r));
+  const hangUrl = `http://127.0.0.1:${hang.address().port}/`;
+  const tA = Date.now();
+  await assert.rejects(fetchWithTimeout(hangUrl, {}, 150, "Hang"), /Hang 150ms/);
+  assert(Date.now() - tA < 1000, "rejects at the deadline");
+  await new Promise((r) => setTimeout(r, 100));
+  assert.strictEqual(open, 0, "socket must be closed after the timeout (request aborted)");
+  // Without AbortController it degrades to withTimeout (QuickJS / Hermes path)
+  // (Node's own fetch needs AbortController internally, so this half uses a stub fetch.)
+  const savedAC = global.AbortController;
+  const savedFetch = global.fetch;
+  let sawSignal = null;
+  global.AbortController = undefined;
+  global.fetch = (u, init) => {
+    sawSignal = init && "signal" in init;
+    return new Promise(() => {});
+  };
+  await assert.rejects(fetchWithTimeout(hangUrl, {}, 100, "NoAC"), /NoAC 100ms/);
+  assert.strictEqual(sawSignal, false, "no signal passed when the runtime has no AbortController");
+  global.AbortController = savedAC;
+  global.fetch = savedFetch;
+  hang.closeAllConnections();
+  await new Promise((r) => hang.close(r));
+  console.log("✓ fetchWithTimeout aborts the socket at the deadline; degrades without AbortController");
 
   console.log("\n🎉 Offline unit tests passed\n");
 }

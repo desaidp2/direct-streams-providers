@@ -77,6 +77,7 @@ function getContext() {
         // A crashed/closed browser is relaunched on the next call.
         ctx.on("close", () => {
           contextPromise = null;
+          cachedUserAgent = "";
         });
         return ctx;
       })
@@ -137,12 +138,23 @@ function formatCookieHeader(cookies) {
   return cookies.map((c) => `${c.name}=${c.value}`).join("; ");
 }
 
+// The browser's UA is fixed for the life of a launched context (patchright advises against
+// overriding it), so it is read once per context and reused: one CDP evaluate round-trip
+// per execute() saved. Reset when the context closes, since a relaunch may change it.
+let cachedUserAgent = "";
+
+async function readUserAgent(page) {
+  if (cachedUserAgent) return cachedUserAgent;
+  const ua = await page.evaluate(() => navigator.userAgent).catch(() => "");
+  if (ua) cachedUserAgent = ua;
+  return ua;
+}
+
+// Cookies are re-read every call on purpose: the site rotates them (Anubis / DDoS-Guard).
 async function extractSessionHeaders(page, url) {
   const ctx = page.context();
-  const cookiesList = await ctx.cookies(url).catch(() => []);
-  const cookieString = formatCookieHeader(cookiesList);
-  const userAgent = await page.evaluate(() => navigator.userAgent).catch(() => "");
-  return { cookies: cookieString, userAgent: userAgent };
+  const [cookiesList, userAgent] = await Promise.all([ctx.cookies(url).catch(() => []), readUserAgent(page)]);
+  return { cookies: formatCookieHeader(cookiesList), userAgent: userAgent };
 }
 
 async function executeOnKeptPage(url, options) {
@@ -236,18 +248,23 @@ async function getCookies(url = "https://flystream.net") {
   return formatCookieHeader(cookiesList);
 }
 
+// Cached UA, else read from an already open page, else from a short-lived tab that goes
+// through acquireTab like every other tab (it used to bypass MAX_TABS on the Pi).
 async function getUserAgent() {
+  if (cachedUserAgent) return cachedUserAgent;
   const ctx = await getContext();
   const pages = ctx.pages();
-  if (pages.length > 0) {
-    return await pages[0].evaluate(() => navigator.userAgent).catch(() => "");
-  }
-  const page = await ctx.newPage().catch(() => null);
-  if (!page) return "";
+  if (pages.length > 0) return readUserAgent(pages[0]);
+  await acquireTab();
+  let page = null;
   try {
-    return await page.evaluate(() => navigator.userAgent).catch(() => "");
+    page = await ctx.newPage();
+    return await readUserAgent(page);
+  } catch (_) {
+    return "";
   } finally {
-    await page.close().catch(() => {});
+    if (page) await page.close().catch(() => {});
+    releaseTab();
   }
 }
 

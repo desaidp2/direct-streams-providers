@@ -1,6 +1,5 @@
 /**
  * flystream - Built from src/flystream/
- * Generated: 2026-11-08T10:28:14.477Z
  */
 var __getOwnPropNames = Object.getOwnPropertyNames;
 var __commonJS = (cb, mod) => function __require() {
@@ -66,6 +65,17 @@ var require_provider_utils = __commonJS({
         }
       );
     }
+    function fetchWithTimeout(url, init, ms, label) {
+      if (typeof AbortController !== "function" || typeof setTimeout !== "function") {
+        return withTimeout2(fetch(url, init), ms, label);
+      }
+      const controller = new AbortController();
+      const opts = Object.assign({}, init || {}, { signal: controller.signal });
+      return withTimeout2(fetch(url, opts), ms, label).catch((err) => {
+        controller.abort();
+        throw err;
+      });
+    }
     var TtlCache2 = class {
       constructor(limit, defaultTtlMs) {
         this.limit = limit;
@@ -101,14 +111,14 @@ var require_provider_utils = __commonJS({
         return this.map.size;
       }
     };
-    module2.exports = { QUALITY_ORDER, qualityRank, sortByQuality: sortByQuality2, withTimeout: withTimeout2, TtlCache: TtlCache2 };
+    module2.exports = { QUALITY_ORDER, qualityRank, sortByQuality: sortByQuality2, withTimeout: withTimeout2, fetchWithTimeout, TtlCache: TtlCache2 };
   }
 });
 
 // src/flystream/flystream-api-streams.js
 var require_flystream_api_streams = __commonJS({
   "src/flystream/flystream-api-streams.js"(exports2, module2) {
-    var { withTimeout: withTimeout2 } = require_provider_utils();
+    var { withTimeout: withTimeout2, fetchWithTimeout } = require_provider_utils();
     var API_BASE = "https://flystream.net";
     var BROWSER_UA2 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
     var API_HEADERS = {
@@ -263,7 +273,7 @@ ${details || "Direct HLS Stream"}`,
       return __async(this, null, function* () {
         const endpoint = `${host}/companion/flystream?${qs}`;
         console.log(`[FlyStream] Querying companion: ${endpoint}`);
-        const res = yield withTimeout2(fetch(endpoint), COMPANION_TIMEOUT_MS, "FlyStream Companion");
+        const res = yield fetchWithTimeout(endpoint, void 0, COMPANION_TIMEOUT_MS, "FlyStream Companion");
         if (!res || !res.ok)
           throw new Error(`HTTP ${res && res.status}`);
         const data = yield res.json();
@@ -312,7 +322,7 @@ ${details || "Direct HLS Stream"}`,
         }
         const url = buildApiUrl(buildApiParams(query));
         try {
-          const res = yield withTimeout2(fetch(url, { headers: API_HEADERS }), API_TIMEOUT_MS, "FlyStream API");
+          const res = yield fetchWithTimeout(url, { headers: API_HEADERS }, API_TIMEOUT_MS, "FlyStream API");
           if (res.status !== 200)
             return { ok: false, reason: `HTTP ${res.status}` };
           const data = JSON.parse(yield res.text());
@@ -339,7 +349,7 @@ ${details || "Direct HLS Stream"}`,
 // src/flystream/tmdb-title-metadata.js
 var require_tmdb_title_metadata = __commonJS({
   "src/flystream/tmdb-title-metadata.js"(exports2, module2) {
-    var { withTimeout: withTimeout2, TtlCache: TtlCache2 } = require_provider_utils();
+    var { fetchWithTimeout, TtlCache: TtlCache2 } = require_provider_utils();
     var TMDB_PROXY = "https://db.wecollege.net/3";
     var META_TIMEOUT_MS = 2e3;
     var META_TTL_MS = 6 * 60 * 60 * 1e3;
@@ -368,8 +378,9 @@ var require_tmdb_title_metadata = __commonJS({
         let meta = {};
         try {
           const url = `${TMDB_PROXY}/${mediaType}/${encodeURIComponent(tmdbId)}?append_to_response=external_ids`;
-          const res = yield withTimeout2(
-            fetch(url, { headers: { "User-Agent": "Mozilla/5.0", Accept: "application/json" } }),
+          const res = yield fetchWithTimeout(
+            url,
+            { headers: { "User-Agent": "Mozilla/5.0", Accept: "application/json" } },
             META_TIMEOUT_MS,
             "FlyStream TMDB meta"
           );
