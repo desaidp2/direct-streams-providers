@@ -1,6 +1,6 @@
 /**
  * flystream - Built from src/flystream/
- * Generated: 2026-11-08T06:42:26.801Z
+ * Generated: 2026-11-08T10:16:35.194Z
  */
 var __getOwnPropNames = Object.getOwnPropertyNames;
 var __commonJS = (cb, mod) => function __require() {
@@ -105,9 +105,274 @@ var require_provider_utils = __commonJS({
   }
 });
 
+// src/flystream/flystream-api-streams.js
+var require_flystream_api_streams = __commonJS({
+  "src/flystream/flystream-api-streams.js"(exports2, module2) {
+    var { withTimeout: withTimeout2 } = require_provider_utils();
+    var API_BASE = "https://flystream.net";
+    var BROWSER_UA2 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
+    var API_HEADERS = {
+      "User-Agent": BROWSER_UA2,
+      Referer: API_BASE + "/",
+      Accept: "application/json"
+    };
+    var PLAYBACK_HEADERS = {
+      "User-Agent": BROWSER_UA2,
+      Referer: API_BASE + "/"
+    };
+    var API_TIMEOUT_MS = 5e3;
+    function randomViewerId() {
+      let out = "";
+      for (let i = 0; i < 32; i++)
+        out += Math.floor(Math.random() * 16).toString(16);
+      return out;
+    }
+    function buildApiParams({ mediaType, title, tmdbId, imdbId, year, season, episode, viewerId }) {
+      const isTv = mediaType === "tv";
+      const params = [
+        ["type", isTv ? "tv" : "movie"],
+        ["viewerId", viewerId || randomViewerId()],
+        ["title", title || ""]
+      ];
+      if (tmdbId != null && tmdbId !== "")
+        params.push(["tmdbId", String(tmdbId)]);
+      if (imdbId)
+        params.push(["imdb", String(imdbId)]);
+      if (year != null && year !== "")
+        params.push(["year", String(year)]);
+      if (isTv && season != null)
+        params.push(["season", String(season)]);
+      if (isTv && episode != null)
+        params.push(["episode", String(episode)]);
+      return params;
+    }
+    function buildApiUrl(params) {
+      const qs = params.map(([k, v]) => encodeURIComponent(k) + "=" + encodeURIComponent(v)).join("&");
+      return `${API_BASE}/api/streams?${qs}`;
+    }
+    function normalizeQuality(raw) {
+      const q = String(raw || "");
+      if (/2160|4k|uhd/i.test(q))
+        return "4K";
+      if (/1440/.test(q))
+        return "1440p";
+      if (/1080/.test(q))
+        return "1080p";
+      if (/720/.test(q))
+        return "720p";
+      if (/480/.test(q))
+        return "480p";
+      if (/360/.test(q))
+        return "360p";
+      return "Auto";
+    }
+    function str(v) {
+      return v == null ? "" : String(v);
+    }
+    function mapApiStreams(data, fallbackTitle, session) {
+      const list = data && Array.isArray(data.streams) ? data.streams : [];
+      const streams = [];
+      const seen = /* @__PURE__ */ new Set();
+      const ua = session && session.userAgent || BROWSER_UA2;
+      const playbackHeaders = {
+        "User-Agent": ua,
+        Referer: API_BASE + "/"
+      };
+      if (session && session.cookie) {
+        playbackHeaders["Cookie"] = session.cookie;
+      }
+      for (const s of list) {
+        if (!s || typeof s !== "object")
+          continue;
+        const rawUrl = str(s.url);
+        if (!rawUrl)
+          continue;
+        const url = rawUrl.startsWith("/") ? API_BASE + rawUrl : rawUrl;
+        if (!/^https?:\/\//i.test(url) || seen.has(url))
+          continue;
+        seen.add(url);
+        const qualityLabel = str(s.quality) || "Auto";
+        const codec = str(s.videoCodec);
+        const size = str(s.size);
+        const name = str(s.name) || str(s.title) || fallbackTitle || "Stream";
+        const details = [qualityLabel, codec ? codec.toUpperCase() : "", size].filter(Boolean).join(" \xB7 ");
+        const stream = {
+          name: `FlyStream - ${qualityLabel}`,
+          title: `FlyStream ${name}
+${details || "Direct HLS Stream"}`,
+          url,
+          quality: normalizeQuality(qualityLabel),
+          headers: playbackHeaders,
+          behaviorHints: {
+            notWebReady: true,
+            proxyHeaders: { request: playbackHeaders }
+          },
+          subtitles: []
+        };
+        if (size)
+          stream.size = size;
+        streams.push(stream);
+      }
+      return streams;
+    }
+    var BROWSER_API_TIMEOUT_MS = 6500;
+    function hostChallengeBrowser() {
+      return typeof challengeBrowser !== "undefined" && challengeBrowser && typeof challengeBrowser.execute === "function" ? challengeBrowser : null;
+    }
+    var BROWSER_ORIGIN_PAGE = API_BASE + "/robots.txt";
+    function inPageFetchJs(path) {
+      return "(async () => { const r = await fetch(" + JSON.stringify(path) + ", { headers: { Accept: 'application/json' }, credentials: 'same-origin' }); return JSON.stringify({ status: r.status, body: await r.text() }); })()";
+    }
+    function fetchViaHostBrowser(cb, url, title) {
+      return __async(this, null, function* () {
+        try {
+          const r = yield withTimeout2(
+            cb.execute(BROWSER_ORIGIN_PAGE, {
+              reuse: true,
+              evaluateJs: inPageFetchJs(url.slice(API_BASE.length)),
+              timeoutMs: BROWSER_API_TIMEOUT_MS
+            }),
+            BROWSER_API_TIMEOUT_MS + 500,
+            "FlyStream API (browser)"
+          );
+          const res = JSON.parse(String(r && r.result || ""));
+          if (res.status !== 200)
+            return { ok: false, reason: `browser HTTP ${res.status}` };
+          const cookie = r && r.cookies || (typeof cb.getCookies === "function" ? yield cb.getCookies() : "");
+          const userAgent = r && r.userAgent || (typeof cb.getUserAgent === "function" ? yield cb.getUserAgent() : BROWSER_UA2);
+          return {
+            ok: true,
+            streams: mapApiStreams(JSON.parse(res.body), title, { cookie, userAgent }),
+            via: "browser"
+          };
+        } catch (err) {
+          return { ok: false, reason: "browser: " + String(err && err.message || err) };
+        }
+      });
+    }
+    var BUILD_COMPANION_URL = true ? "" : "";
+    function getCompanionCandidates() {
+      const envUrl = typeof process !== "undefined" && process.env ? process.env.FLYSTREAM_COMPANION_URL : null;
+      const list = [];
+      if (BUILD_COMPANION_URL)
+        list.push(BUILD_COMPANION_URL);
+      if (envUrl) {
+        envUrl.split(",").map((s) => s.trim()).filter(Boolean).forEach((u) => list.push(u));
+      }
+      list.push("http://127.0.0.1:7070");
+      return [...new Set(list)];
+    }
+    function fetchViaCompanion(query) {
+      return __async(this, null, function* () {
+        const candidates = getCompanionCandidates();
+        const qs = buildApiParams(query).map(([k, v]) => encodeURIComponent(k) + "=" + encodeURIComponent(v)).join("&");
+        for (const host of candidates) {
+          try {
+            const endpoint = `${host.replace(/\/+$/, "")}/companion/flystream?${qs}`;
+            console.log(`[FlyStream] Querying companion: ${endpoint}`);
+            const res = yield withTimeout2(fetch(endpoint), 8e3, "FlyStream Companion");
+            if (res && res.ok) {
+              const data = yield res.json();
+              if (data && data.ok && Array.isArray(data.streams) && data.streams.length > 0) {
+                console.log(`[FlyStream] Companion returned ${data.streams.length} stream(s)`);
+                return { ok: true, streams: data.streams, via: "companion" };
+              }
+            }
+          } catch (err) {
+            console.warn(`[FlyStream] Companion ${host} failed: ${err.message || err}`);
+          }
+        }
+        return null;
+      });
+    }
+    function fetchApiStreams2(query) {
+      return __async(this, null, function* () {
+        const cb = hostChallengeBrowser();
+        if (cb) {
+          const url2 = buildApiUrl(buildApiParams(query));
+          return fetchViaHostBrowser(cb, url2, query.title);
+        }
+        const companionResult = yield fetchViaCompanion(query);
+        if (companionResult && companionResult.ok) {
+          return companionResult;
+        }
+        const url = buildApiUrl(buildApiParams(query));
+        try {
+          const res = yield withTimeout2(fetch(url, { headers: API_HEADERS }), API_TIMEOUT_MS, "FlyStream API");
+          if (res.status !== 200)
+            return { ok: false, reason: `HTTP ${res.status}` };
+          const data = JSON.parse(yield res.text());
+          return { ok: true, streams: mapApiStreams(data, query.title) };
+        } catch (err) {
+          return { ok: false, reason: String(err && err.message || err) };
+        }
+      });
+    }
+    module2.exports = {
+      API_BASE,
+      PLAYBACK_HEADERS,
+      randomViewerId,
+      buildApiParams,
+      buildApiUrl,
+      normalizeQuality,
+      mapApiStreams,
+      fetchApiStreams: fetchApiStreams2
+    };
+  }
+});
+
+// src/flystream/tmdb-title-metadata.js
+var require_tmdb_title_metadata = __commonJS({
+  "src/flystream/tmdb-title-metadata.js"(exports2, module2) {
+    var { withTimeout: withTimeout2, TtlCache: TtlCache2 } = require_provider_utils();
+    var TMDB_PROXY = "https://db.wecollege.net/3";
+    var META_TIMEOUT_MS = 2e3;
+    var META_TTL_MS = 6 * 60 * 60 * 1e3;
+    var MISS_TTL_MS = 5 * 60 * 1e3;
+    var metaCache = new TtlCache2(200, META_TTL_MS);
+    function pickTitleMetadata(data, mediaType) {
+      if (!data || typeof data !== "object")
+        return {};
+      const isTv = mediaType === "tv";
+      const title = (isTv ? data.name || data.original_name : data.title || data.original_title) || void 0;
+      const date = (isTv ? data.first_air_date : data.release_date) || "";
+      const yearMatch = /^(\d{4})/.exec(String(date));
+      const imdb = data.external_ids && data.external_ids.imdb_id || data.imdb_id || void 0;
+      return {
+        title: title ? String(title) : void 0,
+        year: yearMatch ? parseInt(yearMatch[1], 10) : void 0,
+        imdbId: imdb && /^tt\d+$/.test(imdb) ? imdb : void 0
+      };
+    }
+    function fetchTitleMetadata2(tmdbId, mediaType) {
+      return __async(this, null, function* () {
+        const key = `${mediaType}:${tmdbId}`;
+        const cached = metaCache.get(key);
+        if (cached)
+          return cached;
+        let meta = {};
+        try {
+          const url = `${TMDB_PROXY}/${mediaType}/${encodeURIComponent(tmdbId)}?append_to_response=external_ids`;
+          const res = yield withTimeout2(
+            fetch(url, { headers: { "User-Agent": "Mozilla/5.0", Accept: "application/json" } }),
+            META_TIMEOUT_MS,
+            "FlyStream TMDB meta"
+          );
+          if (res.ok)
+            meta = pickTitleMetadata(yield res.json(), mediaType);
+        } catch (err) {
+          console.warn("[FlyStream] title metadata lookup failed:", err.message || err);
+        }
+        metaCache.set(key, meta, meta.title ? META_TTL_MS : MISS_TTL_MS);
+        return meta;
+      });
+    }
+    module2.exports = { fetchTitleMetadata: fetchTitleMetadata2, pickTitleMetadata };
+  }
+});
+
 // src/flystream/index.js
 var BROWSER_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
-var MEDIA_UA = "okhttp/4.12.0";
 var BASE_URL = "https://flystream.net";
 var HEADERS = {
   "User-Agent": BROWSER_UA,
@@ -115,70 +380,14 @@ var HEADERS = {
   Origin: BASE_URL,
   Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8"
 };
-var STREAM_HEADERS = {
-  "User-Agent": MEDIA_UA,
-  Referer: BASE_URL + "/",
-  Origin: BASE_URL
-};
 var { sortByQuality, withTimeout, TtlCache } = require_provider_utils();
+var { fetchApiStreams } = require_flystream_api_streams();
+var { fetchTitleMetadata } = require_tmdb_title_metadata();
 var MAX_CACHE_SIZE = 100;
 var CACHE_TTL_MS = 10 * 60 * 1e3;
 var EMPTY_TTL_MS = 5 * 60 * 1e3;
 var PAGE_TIMEOUT_MS = 5e3;
-var EMBED_TIMEOUT_MS = 3500;
-var MAX_EMBEDS = 4;
 var streamCache = new TtlCache(MAX_CACHE_SIZE, CACHE_TTL_MS);
-var MEDIA_REGEX = /https?:\/\/[^"'\s<>\\]+\.(?:m3u8|mp4)(?:[?#][^"'\s<>\\]*)?/gi;
-var NAMED_ENTITIES = { amp: "&", quot: '"', apos: "'", lt: "<", gt: ">" };
-function decodeHtmlEntities(s) {
-  return s.replace(/&(#x[0-9a-f]+|#[0-9]+|[a-z]+);/gi, (whole, ent) => {
-    const e = ent.toLowerCase();
-    if (e[0] === "#") {
-      const code = e[1] === "x" ? parseInt(e.slice(2), 16) : parseInt(e.slice(1), 10);
-      return code > 0 && code <= 1114111 ? String.fromCodePoint(code) : whole;
-    }
-    return Object.prototype.hasOwnProperty.call(NAMED_ENTITIES, e) ? NAMED_ENTITIES[e] : whole;
-  });
-}
-function extractMediaUrls(html) {
-  const text = html.replace(/\\\//g, "/");
-  const urls = [];
-  let match;
-  MEDIA_REGEX.lastIndex = 0;
-  while ((match = MEDIA_REGEX.exec(text)) !== null)
-    urls.push(decodeHtmlEntities(match[0]));
-  return urls;
-}
-function qualityFromUrl(url) {
-  if (/2160p|4k/i.test(url))
-    return "4K";
-  if (/1080p/i.test(url))
-    return "1080p";
-  if (/720p/i.test(url))
-    return "720p";
-  return "Auto";
-}
-function originOf(url) {
-  const m = /^(https?:\/\/[^/?#]+)/i.exec(url);
-  return m ? m[1] : null;
-}
-function buildStream(name, title, url, quality, headers) {
-  const h = headers || STREAM_HEADERS;
-  return {
-    name,
-    title,
-    url,
-    quality,
-    headers: h,
-    behaviorHints: {
-      notWebReady: true,
-      proxyHeaders: {
-        request: h
-      }
-    },
-    subtitles: []
-  };
-}
 function fetchPageDOM(url, timeoutMs) {
   return __async(this, null, function* () {
     try {
@@ -187,17 +396,6 @@ function fetchPageDOM(url, timeoutMs) {
       console.error("[FlyStream] fetchPageDOM failed:", err.message || err);
       return null;
     }
-  });
-}
-function resolveEmbed(embedUrl) {
-  return __async(this, null, function* () {
-    const html = yield fetchPageDOM(embedUrl, EMBED_TIMEOUT_MS);
-    if (!html)
-      return [];
-    const urls = extractMediaUrls(html);
-    if (!urls.length)
-      console.warn(`[FlyStream] embed has no media link, dropped: ${embedUrl}`);
-    return urls;
   });
 }
 function loadPage(url) {
@@ -285,76 +483,28 @@ function getStreams(tmdbId, mediaType = "movie", season = 1, episode = 1) {
     if (!tmdbId)
       return [];
     const normType = mediaType === "series" || mediaType === "tv" ? "tv" : "movie";
-    const cacheKey = `${normType}:${tmdbId}:${season}:${episode}`;
+    const s = normType === "tv" ? season || 1 : null;
+    const e = normType === "tv" ? episode || 1 : null;
+    const cacheKey = `${normType}:${tmdbId}:${s}:${e}`;
     const cached = streamCache.get(cacheKey);
     if (cached)
       return cached;
     try {
-      const targetUrl = normType === "tv" ? `${BASE_URL}/tv/${tmdbId}?season=${season}&episode=${episode}` : `${BASE_URL}/movie/${tmdbId}`;
-      const htmlContent = yield fetchPageDOM(targetUrl);
-      if (!htmlContent) {
-        streamCache.set(cacheKey, [], EMPTY_TTL_MS);
-        return [];
-      }
-      const streams = [];
-      const seenUrls = /* @__PURE__ */ new Set();
-      const title = normType === "tv" ? `TV ${tmdbId} S${season}E${episode}` : `Movie ${tmdbId}`;
-      const playerState = htmlContent.match(/__STREAM_CONFIG__\s*=\s*(\{.*?\});/);
-      if (playerState) {
-        try {
-          const config = JSON.parse(playerState[1]);
-          if (config && Array.isArray(config.sources)) {
-            for (const source of config.sources) {
-              const streamUrl = source.file || source.url;
-              if (!streamUrl || seenUrls.has(streamUrl))
-                continue;
-              seenUrls.add(streamUrl);
-              const q = source.quality || "Auto";
-              streams.push(
-                buildStream(`FlyStream - ${source.label || q}`, `${title} - ${source.label || "HighSpeed"} (${q})`, streamUrl, q)
-              );
-            }
-          }
-        } catch (e) {
-          console.warn("[FlyStream] Failed to parse __STREAM_CONFIG__:", e.message || e);
-        }
-      }
-      const iframeRegex = /<iframe[^>]+src="([^"]+)"/gi;
-      const embedUrls = [];
-      let match;
-      while ((match = iframeRegex.exec(htmlContent)) !== null) {
-        let embedUrl = decodeHtmlEntities(match[1]);
-        if (embedUrl.startsWith("//"))
-          embedUrl = "https:" + embedUrl;
-        if (!/^https?:\/\//i.test(embedUrl) || embedUrls.includes(embedUrl))
-          continue;
-        embedUrls.push(embedUrl);
-      }
-      const embedResults = yield Promise.all(embedUrls.slice(0, MAX_EMBEDS).map(resolveEmbed));
-      let mirrorIndex = 1;
-      embedUrls.slice(0, MAX_EMBEDS).forEach((embedUrl, i) => {
-        const origin = originOf(embedUrl);
-        const headers = origin ? { "User-Agent": MEDIA_UA, Referer: origin + "/", Origin: origin } : STREAM_HEADERS;
-        for (const streamUrl of embedResults[i]) {
-          if (seenUrls.has(streamUrl))
-            continue;
-          seenUrls.add(streamUrl);
-          const q = qualityFromUrl(streamUrl);
-          streams.push(
-            buildStream(`FlyStream - Mirror #${mirrorIndex} (${q})`, `${title} - Mirror #${mirrorIndex} (${q})`, streamUrl, q, headers)
-          );
-          mirrorIndex++;
-        }
+      const meta = yield fetchTitleMetadata(String(tmdbId), normType);
+      const result = yield fetchApiStreams({
+        mediaType: normType,
+        title: meta.title,
+        tmdbId,
+        imdbId: meta.imdbId,
+        year: meta.year,
+        season: s,
+        episode: e
       });
-      for (const streamUrl of extractMediaUrls(htmlContent)) {
-        if (seenUrls.has(streamUrl))
-          continue;
-        seenUrls.add(streamUrl);
-        const q = qualityFromUrl(streamUrl);
-        streams.push(buildStream(`FlyStream - ${q}`, `${title} - Direct (${q})`, streamUrl, q));
-      }
-      sortByQuality(streams);
+      if (!result.ok)
+        console.warn(`[FlyStream] API call failed (${result.reason}) for ${cacheKey}`);
+      const streams = result.ok ? sortByQuality(result.streams) : [];
       streamCache.set(cacheKey, streams, streams.length ? CACHE_TTL_MS : EMPTY_TTL_MS);
+      console.log(`[FlyStream] ${streams.length} stream(s) for ${cacheKey}`);
       return streams;
     } catch (err) {
       console.error("[FlyStream] getStreams error:", err.message || err);

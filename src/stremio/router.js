@@ -10,6 +10,8 @@
  * Compatible with Stremio and WuPlay (Android TV, Desktop, Web).
  */
 
+const fs = require("fs");
+const pathModule = require("path");
 const { resolveTmdbId } = require("./id-resolver");
 const { toIso6392 } = require("./languages");
 const { getStreams: get7MoviesStreams } = require("../7movies/index");
@@ -18,9 +20,19 @@ const { getStreams: getFlyStreamStreams } = require("../flystream/index");
 const { CORS_HEADERS } = require("./http-constants");
 const { handleSubtitleProxy } = require("./subtitle-proxy");
 
+function getNuvioManifest() {
+  try {
+    const rootManifestPath = pathModule.join(__dirname, "../../manifest.json");
+    if (fs.existsSync(rootManifestPath)) {
+      return JSON.parse(fs.readFileSync(rootManifestPath, "utf8"));
+    }
+  } catch (_) {}
+  return null;
+}
+
 const MANIFEST = {
   id: "community.directstreamsproviders",
-  version: "1.0.9",
+  version: "1.0.10",
   name: "Direct Streams Providers",
   description: "Fast direct streams from 7Movies, Movy & FlyStream up to 4K with multilingual subtitles (No Debrid Needed)",
   resources: ["stream", "subtitles"],
@@ -234,12 +246,17 @@ async function route(path, query = {}, baseUrl = "") {
     return { status: 400, headers: CORS_HEADERS, body: JSON.stringify({ error: "Malformed path" }) };
   }
 
-  // Route 1: Root or manifest
+  // Route 1: Root or manifest (dual compatibility for Stremio and Nuvio plugin manifest)
   if (cleanPath === "" || cleanPath === "/" || cleanPath === "/manifest.json") {
+    const combinedManifest = Object.assign({}, MANIFEST);
+    const rootNuvioManifest = getNuvioManifest();
+    if (rootNuvioManifest && Array.isArray(rootNuvioManifest.scrapers)) {
+      combinedManifest.scrapers = rootNuvioManifest.scrapers;
+    }
     return {
       status: 200,
       headers: CORS_HEADERS,
-      body: JSON.stringify(MANIFEST, null, 2),
+      body: JSON.stringify(combinedManifest, null, 2),
     };
   }
 
@@ -272,6 +289,56 @@ async function route(path, query = {}, baseUrl = "") {
       headers: CORS_HEADERS,
       body: JSON.stringify(result),
     };
+  }
+
+  // Route 5: Companion endpoint for FlyStream (used by client-side QuickJS / Nuvio)
+  if (cleanPath === "/companion/flystream" || cleanPath === "/api/flystream/streams") {
+    const tmdbId = query.tmdbId || query.id;
+    const mediaType = query.type || query.mediaType || "movie";
+    const season = query.season ? parseInt(query.season, 10) : 1;
+    const episode = query.episode ? parseInt(query.episode, 10) : 1;
+    const streams = tmdbId ? await getFlyStreamStreams(tmdbId, mediaType, season, episode) : [];
+    return {
+      status: 200,
+      headers: CORS_HEADERS,
+      body: JSON.stringify({ ok: streams.length > 0, streams: streams }),
+    };
+  }
+
+  // Route 6: Companion session cookies endpoint
+  if (cleanPath === "/companion/flystream/cookies") {
+    const cb = typeof challengeBrowser !== "undefined" ? challengeBrowser : null;
+    const cookies = cb && typeof cb.getCookies === "function" ? await cb.getCookies() : "";
+    const userAgent = cb && typeof cb.getUserAgent === "function" ? await cb.getUserAgent() : "";
+    return {
+      status: 200,
+      headers: CORS_HEADERS,
+      body: JSON.stringify({ ok: !!cookies, cookies: cookies, userAgent: userAgent }),
+    };
+  }
+
+  // Route 7: Static provider files for Nuvio plugin installations (/providers/:file.js)
+  const providerMatch = cleanPath.match(/^\/providers\/([a-zA-Z0-9_.-]+\.js)$/);
+  if (providerMatch) {
+    const filename = providerMatch[1];
+    const filepath = pathModule.join(__dirname, "../../providers", filename);
+    if (fs.existsSync(filepath)) {
+      let code = fs.readFileSync(filepath, "utf8");
+      // Dynamically inject local companion URL at serve-time from environment
+      // so tracked provider files never leak private IPs or LAN hostnames in git.
+      const envCompanionUrl = process.env.FLYSTREAM_COMPANION_URL;
+      if (filename === "flystream.js" && envCompanionUrl) {
+        code = code.replace(
+          /var BUILD_COMPANION_URL\s*=[^;]+;/,
+          `var BUILD_COMPANION_URL = ${JSON.stringify(envCompanionUrl)};`
+        );
+      }
+      return {
+        status: 200,
+        headers: { ...CORS_HEADERS, "Content-Type": "application/javascript; charset=utf-8" },
+        body: code,
+      };
+    }
   }
 
   // 404 Not Found

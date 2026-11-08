@@ -5,11 +5,16 @@
     "scripts": {
         "build": "node build.js",
         "serve": "node server.js",
+        "companion": "node scripts/flystream-companion.js",
         "test": "npm run test:offline && node test-7movies.js && node test-movy.js && node test-stremio.js",
         "test:offline": "node test-offline-units.js && node test-router-offline.js && node test-flystream.js"
     },
     "devDependencies": {
         "esbuild": "^0.20.0"
     },
-    "license": "GPL-3.0"
+    "license": "GPL-3.0",
+    "optionalDependencies": {
+        "patchright": "^1.64.0",
+        "playwright-core": "^1.49.0"
+    }
 }

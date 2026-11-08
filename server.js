@@ -11,8 +11,72 @@
  *   PORT=7000 node server.js
  */
 
+const fs = require("fs");
+const path = require("path");
 const http = require("http");
+
+// Load .env file if present (zero external dependencies)
+function loadEnv() {
+  const envPath = path.join(__dirname, ".env");
+  if (!fs.existsSync(envPath)) return;
+  try {
+    const content = fs.readFileSync(envPath, "utf8");
+    for (const line of content.split("\n")) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith("#")) continue;
+      const eqIdx = trimmed.indexOf("=");
+      if (eqIdx === -1) continue;
+      const key = trimmed.slice(0, eqIdx).trim();
+      let val = trimmed.slice(eqIdx + 1).trim();
+      if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
+        val = val.slice(1, -1);
+      }
+      if (process.env[key] === undefined) {
+        process.env[key] = val;
+      }
+    }
+  } catch (_) {}
+}
+loadEnv();
+
 const { route, CORS_HEADERS } = require("./src/stremio/router");
+
+function hasBrowserEngine() {
+  try {
+    require("patchright");
+    return true;
+  } catch (_) {
+    try {
+      require("playwright-core");
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+}
+
+// Real-browser host (auto-enabled if patchright or playwright-core is available,
+// or via CHALLENGE_BROWSER=patchright/chromium/1; disable with CHALLENGE_BROWSER=0).
+const enableBrowser =
+  process.env.CHALLENGE_BROWSER === "chromium" ||
+  process.env.CHALLENGE_BROWSER === "patchright" ||
+  process.env.CHALLENGE_BROWSER === "1" ||
+  process.env.CHALLENGE_BROWSER === "true" ||
+  (process.env.CHALLENGE_BROWSER !== "0" && hasBrowserEngine());
+
+if (enableBrowser) {
+  try {
+    const browserHost = require("./src/host/chromium-challenge-browser");
+    global.challengeBrowser = browserHost;
+    browserHost.warmUp("https://flystream.net/");
+    const shutdown = () => browserHost.close().finally(() => process.exit(0));
+    process.on("SIGTERM", shutdown);
+    process.on("SIGINT", shutdown);
+    console.log("[ChallengeBrowser] enabled (patchright / chromium host)");
+  } catch (err) {
+    console.warn("[ChallengeBrowser] failed to initialize:", err.message || err);
+  }
+}
 
 const PORT = parseInt(process.env.PORT || "7070", 10);
 const HOST = process.env.HOST || "0.0.0.0";

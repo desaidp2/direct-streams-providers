@@ -88,6 +88,17 @@ async function run() {
   assert.strictEqual(subsRes.subtitles.length, 2);
   const manifest = JSON.parse((await route("/manifest.json", {}, "")).body);
   assert.strictEqual(manifest.id, "community.directstreamsproviders");
+
+  // 6. Companion endpoints
+  const compRes = await route("/companion/flystream", { tmdbId: "3", type: "movie" }, "http://h");
+  assert.strictEqual(compRes.status, 200);
+  const compData = JSON.parse(compRes.body);
+  assert.strictEqual(compData.ok, true);
+  assert(compData.streams.length > 0);
+
+  const cookieRes = await route("/companion/flystream/cookies", {}, "http://h");
+  assert.strictEqual(cookieRes.status, 200);
+  console.log("✓ companion endpoints /companion/flystream and /cookies OK");
   console.log("✓ 400 on malformed path / non-http subtitle url; subtitles + manifest routes OK");
 
   console.log("\n🎉 Offline router tests passed\n");

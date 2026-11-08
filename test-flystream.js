@@ -1,106 +1,201 @@
 /**
  * FlyStream provider tests, fully offline: `fetch` is stubbed, so this never contacts
- * flystream.net. The previous version called the live site and only checked stream shape
- * `if (streams.length > 0)`, so it passed while returning zero streams.
+ * flystream.net or the TMDB proxy. Covers the JSON-API port of the hostreamio Dart scraper.
  * Run: node test-flystream.js
  */
 const assert = require("assert");
 
-let fetchCalls = 0;
-let mode = "gated";
-const fetched = [];
-const html = (body) => ({ ok: true, status: 200, text: async () => body });
-// Embed pages served by the stub (never the network). `&amp;` in the iframe src must be decoded
-// before the request, and an embed with no media link must not reach the player.
-const EMBEDS = {
-  "https://embed.example/e/1?a=1&b=2":
-    '<script>var cfg={"file":"https:\\/\\/cdn2.example\\/hls\\/720p\\/master.m3u8?t=1&amp;x=2"};</script>',
-  "https://embed.example/e/dead": "<html><p>video removed</p></html>",
-};
-let hangEmbeds = false;
-global.fetch = async (url) => {
-  fetchCalls++;
-  fetched.push(url);
-  if (mode === "gated") return { ok: false, status: 403, text: async () => "" };
-  if (mode === "hang") return new Promise(() => {});
-  if (hangEmbeds && url.startsWith("https://embed.example/")) return new Promise(() => {});
-  if (Object.prototype.hasOwnProperty.call(EMBEDS, url)) return html(EMBEDS[url]);
-  if (url.startsWith("https://embed.example/")) return { ok: false, status: 404, text: async () => "" };
-  return html(
-    '<html><iframe src="//embed.example/e/1?a=1&amp;b=2"></iframe>' +
-      '<iframe src="https://embed.example/e/dead"></iframe>' +
-      '<script>var a="https://cdn.example/v/1080p/index.m3u8?s=1&amp;e=2";var b="https://cdn.example/v/auto.mp4";</script></html>'
-  );
+const calls = [];
+let apiMode = "ok";
+let metaMode = "ok";
+const json = (body, status) => ({
+  ok: (status || 200) === 200,
+  status: status || 200,
+  text: async () => (typeof body === "string" ? body : JSON.stringify(body)),
+  json: async () => body,
+});
+
+const API_BODY = {
+  streams: [
+    { url: "/hls/abc/master.m3u8", quality: "1080p", videoCodec: "h264", size: "2.1 GB", name: "Main" },
+    { url: "https://cdn.example/4k/index.m3u8", quality: "2160p", videoCodec: "hevc", title: "UHD" },
+    { url: "https://cdn.example/4k/index.m3u8", quality: "2160p" }, // duplicate url -> dropped
+    { url: "ftp://bad.example/x.mp4", quality: "720p" }, // not http(s) -> dropped
+    { url: "", quality: "720p" }, // empty -> dropped
+    "not-an-object",
+    { url: "https://cdn.example/auto.m3u8" }, // no quality -> Auto, name falls back to title
+  ],
 };
 
+global.fetch = async (url, opts) => {
+  calls.push({ url, headers: (opts && opts.headers) || {} });
+  if (url.startsWith("https://db.wecollege.net/3/")) {
+    if (metaMode === "fail") return json({}, 500);
+    if (url.includes("/tv/")) {
+      return json({ name: "Show & Co", first_air_date: "2019-03-01", external_ids: { imdb_id: "tt0000002" } });
+    }
+    return json({ title: "Film: One", release_date: "2008-07-16", external_ids: { imdb_id: "tt0468569" } });
+  }
+  if (url.startsWith("https://flystream.net/api/streams?")) {
+    if (apiMode === "hang") return new Promise(() => {});
+    if (apiMode === "403") return json("", 403);
+    if (apiMode === "badjson") return json("<html>oops</html>");
+    return json(API_BODY);
+  }
+  throw new Error("unexpected network call in offline test: " + url);
+};
+
+const api = require("./src/flystream/flystream-api-streams.js");
+const meta = require("./src/flystream/tmdb-title-metadata.js");
 const { getStreams, search, fetchPageDOM } = require("./providers/flystream.js");
+
+function query(url) {
+  const out = {};
+  url.split("?")[1].split("&").forEach((kv) => {
+    const [k, v] = kv.split("=");
+    out[decodeURIComponent(k)] = decodeURIComponent(v);
+  });
+  return out;
+}
+const apiCalls = () => calls.filter((c) => c.url.startsWith("https://flystream.net/api/streams?"));
 
 async function runTests() {
   console.log("\n🧪 FlyStream provider tests (offline)\n");
 
-  assert.strictEqual(typeof getStreams, "function");
+  // Pure units
+  assert.match(api.randomViewerId(), /^[0-9a-f]{32}$/);
+  assert.deepStrictEqual(
+    api.buildApiParams({ mediaType: "movie", title: "X", tmdbId: 1, season: 1, episode: 2, viewerId: "v" }),
+    [["type", "movie"], ["viewerId", "v"], ["title", "X"], ["tmdbId", "1"]],
+    "movie never sends season/episode; absent imdb/year omitted"
+  );
+  assert.deepStrictEqual(
+    ["2160p", "4K", "UHD", "1080p HEVC", "720", "Auto", "", "weird"].map(api.normalizeQuality),
+    ["4K", "4K", "4K", "1080p", "720p", "Auto", "Auto", "Auto"]
+  );
+  assert.deepStrictEqual(meta.pickTitleMetadata({ title: "A", release_date: "1999-01-01", imdb_id: "tt1" }, "movie"), {
+    title: "A",
+    year: 1999,
+    imdbId: "tt1",
+  });
+  assert.deepStrictEqual(meta.pickTitleMetadata(null, "tv"), {});
+  console.log("✓ viewerId, param rules, quality normalisation, TMDB field pick");
+
   assert.strictEqual(typeof search, "function");
   assert.strictEqual(typeof fetchPageDOM, "function");
   assert.deepStrictEqual(await getStreams(null, "movie"), []);
   assert.deepStrictEqual(await getStreams("", "movie"), []);
-  assert.strictEqual(fetchCalls, 0, "empty ids must not fetch");
+  assert.strictEqual(calls.length, 0, "empty ids must not fetch");
   console.log("✓ exports present; null / empty id returns [] without a request");
 
-  // Gated (403) -> [] and the miss is cached: a retrying client does not re-request the page
-  assert.deepStrictEqual(await getStreams("1", "movie"), []);
-  assert.deepStrictEqual(await getStreams("1", "movie"), []);
-  assert.strictEqual(fetchCalls, 1, "a gated miss must be cached");
-  console.log("✓ gated page -> [] and cached (1 request for 2 calls)");
+  // Movie: request shape matches the Dart scraper
+  const movie = await getStreams("155", "movie");
+  const mq = query(apiCalls()[0].url);
+  assert.strictEqual(mq.type, "movie");
+  assert.match(mq.viewerId, /^[0-9a-f]{32}$/);
+  assert.strictEqual(mq.title, "Film: One", "title from TMDB, url-decoded round trip");
+  assert.strictEqual(mq.tmdbId, "155");
+  assert.strictEqual(mq.imdb, "tt0468569");
+  assert.strictEqual(mq.year, "2008");
+  assert(!("season" in mq) && !("episode" in mq), "movie sends no season/episode");
+  const h = apiCalls()[0].headers;
+  assert.strictEqual(h.Referer, "https://flystream.net/");
+  assert.strictEqual(h.Accept, "application/json");
+  assert.match(h["User-Agent"], /^Mozilla\/5\.0/);
+  console.log("✓ movie API request: type, viewerId, title, tmdbId, imdb, year, headers");
 
-  // A stalled page is cut at the 5 s page timeout instead of hanging forever
-  mode = "hang";
-  const t0 = Date.now();
-  assert.deepStrictEqual(await getStreams("2", "movie"), []);
-  const took = Date.now() - t0;
-  assert(took >= 4900 && took < 6500, `stalled page must time out at ~5 s, took ${took} ms`);
-  console.log(`✓ stalled page times out in ${took} ms`);
-
-  // Fixture page: shape, header forwarding, quality order (regression for the refactor)
-  mode = "page";
-  const streams = await getStreams("3", "tv", 1, 2);
-  assert.deepStrictEqual(
-    streams.map((s) => s.quality),
-    ["1080p", "720p", "Auto"],
-    "1080p first, then the 720p resolved from the embed, Auto last"
-  );
-  for (const s of streams) {
+  // Response mapping
+  assert.deepStrictEqual(movie.map((s) => s.quality), ["4K", "1080p", "Auto"], "sorted, junk + dup dropped");
+  assert.strictEqual(movie[1].url, "https://flystream.net/hls/abc/master.m3u8", "relative url prefixed");
+  assert.strictEqual(movie[1].size, "2.1 GB");
+  assert.strictEqual(movie[1].title, "FlyStream Main\n1080p · H264 · 2.1 GB");
+  assert.strictEqual(movie[0].title, "FlyStream UHD\n2160p · HEVC");
+  assert.strictEqual(movie[2].title, "FlyStream Film: One\nAuto", "name falls back to the TMDB title");
+  for (const s of movie) {
     assert.strictEqual(s.behaviorHints.notWebReady, true);
-    assert.strictEqual(s.behaviorHints.proxyHeaders.request["User-Agent"], "okhttp/4.12.0");
+    assert.strictEqual(s.behaviorHints.proxyHeaders.request.Referer, "https://flystream.net/");
+    assert.deepStrictEqual(s.headers, s.behaviorHints.proxyHeaders.request);
   }
-  console.log("✓ fixture page parsed, headers forwarded, sorted by quality");
+  console.log("✓ streams mapped: relative urls, dedupe, quality sort, titles, playback headers");
 
-  // Fix 1: an iframe is an HTML player page, not media. It is resolved to the media link inside it,
-  // and an embed with no media link is dropped instead of being handed to the player.
-  assert(!streams.some((s) => s.url.startsWith("https://embed.example/")), "no embed HTML page is returned as a stream");
-  const viaEmbed = streams.find((s) => s.quality === "720p");
-  assert.strictEqual(viaEmbed.url, "https://cdn2.example/hls/720p/master.m3u8?t=1&x=2", "JSON-escaped link unescaped");
-  assert.strictEqual(viaEmbed.behaviorHints.proxyHeaders.request.Referer, "https://embed.example/", "embed media uses the embed referer");
-  assert.strictEqual(viaEmbed.behaviorHints.proxyHeaders.request.Origin, "https://embed.example");
-  assert(fetched.includes("https://embed.example/e/dead"), "the dead embed was tried");
-  assert.strictEqual(streams.length, 3, "dead embed dropped");
-  console.log("✓ iframe embeds resolved to media; an embed without media is dropped");
+  // Cache: a replay costs no request
+  const before = calls.length;
+  await getStreams("155", "movie");
+  assert.strictEqual(calls.length, before, "cached replay");
+  console.log("✓ cached replay sends no request");
 
-  // Fix 2: HTML entities in iframe src / media links are decoded once
-  assert(fetched.includes("https://embed.example/e/1?a=1&b=2"), "iframe src &amp; decoded before the request");
-  assert(!fetched.some((u) => u.includes("&amp;")), "no request carries a literal &amp;");
-  assert(streams.some((s) => s.url === "https://cdn.example/v/1080p/index.m3u8?s=1&e=2"), "media link &amp; decoded");
-  assert(streams.every((s) => !s.url.includes("&amp;")), "no stream url carries &amp;");
-  console.log("✓ &amp; decoded in iframe src and media links");
+  // TV: season/episode sent, TV metadata fields used
+  await getStreams("1396", "tv", 2, 5);
+  const tq = query(apiCalls()[1].url);
+  assert.deepStrictEqual([tq.type, tq.title, tq.year, tq.imdb, tq.season, tq.episode], [
+    "tv", "Show & Co", "2019", "tt0000002", "2", "5",
+  ]);
+  console.log("✓ tv API request carries season/episode and TV metadata");
 
-  // A stalled embed is cut at its own 3.5 s bound, so page (5 s) + embeds stays under the
-  // router's 9 s provider deadline, and the page's direct links are still returned.
-  hangEmbeds = true;
-  const t1 = Date.now();
-  const partial = await getStreams("4", "movie");
-  const tookEmbed = Date.now() - t1;
-  assert(tookEmbed >= 3400 && tookEmbed < 4500, `stalled embeds must time out at ~3.5 s, took ${tookEmbed} ms`);
-  assert.deepStrictEqual(partial.map((s) => s.quality), ["1080p", "Auto"], "page links survive stalled embeds");
-  console.log(`✓ stalled embeds cut in ${tookEmbed} ms; page links still returned`);
+  // Metadata lookup fails -> API still called by tmdbId, with an empty title slot
+  metaMode = "fail";
+  await getStreams("777", "movie");
+  const fq = query(apiCalls()[2].url);
+  assert.strictEqual(fq.tmdbId, "777");
+  assert.strictEqual(fq.title, "");
+  assert(!("imdb" in fq) && !("year" in fq));
+  metaMode = "ok";
+  console.log("✓ metadata miss still queries the API by tmdbId");
+
+  // Non-200 / bad JSON -> [] and the miss is cached
+  apiMode = "403";
+  assert.deepStrictEqual(await getStreams("9", "movie"), []);
+  const n = apiCalls().length;
+  assert.deepStrictEqual(await getStreams("9", "movie"), []);
+  assert.strictEqual(apiCalls().length, n, "a failed lookup is cached");
+  apiMode = "badjson";
+  assert.deepStrictEqual(await getStreams("10", "movie"), []);
+  console.log("✓ 403 and non-JSON body -> [] (miss cached)");
+
+  // Host challengeBrowser present (server.js on the Pi): the API goes through it, not fetch
+  apiMode = "403"; // fetch would fail, so success proves the browser path was used
+  const browserCalls = [];
+  global.challengeBrowser = {
+    execute: async (url, opts) => {
+      browserCalls.push({ url, opts });
+      const body = JSON.stringify({ streams: [{ url: "/hls/b.m3u8", quality: "720p" }] });
+      return {
+        status: 200,
+        result: JSON.stringify({ status: 200, body }),
+        cookies: "cf_clearance=test123; session=abc",
+        userAgent: "CustomUA/1.0",
+      };
+    },
+  };
+  const viaBrowser = await getStreams("20", "movie");
+  assert.strictEqual(browserCalls.length, 1);
+  assert.strictEqual(browserCalls[0].url, "https://flystream.net/robots.txt", "kept same-origin tab");
+  assert.strictEqual(browserCalls[0].opts.reuse, true);
+  assert(browserCalls[0].opts.evaluateJs.includes('fetch("/api/streams?type=movie'), "in-page fetch of the API path");
+  assert.deepStrictEqual(viaBrowser.map((s) => s.url), ["https://flystream.net/hls/b.m3u8"]);
+  assert.strictEqual(viaBrowser[0].headers.Cookie, "cf_clearance=test123; session=abc", "headers.Cookie forwarded");
+  assert.strictEqual(
+    viaBrowser[0].behaviorHints.proxyHeaders.request.Cookie,
+    "cf_clearance=test123; session=abc",
+    "proxyHeaders.Cookie forwarded to ExoPlayer"
+  );
+  assert.strictEqual(viaBrowser[0].headers["User-Agent"], "CustomUA/1.0", "matching browser UA forwarded");
+  global.challengeBrowser.execute = async () => ({ status: 200, result: JSON.stringify({ status: 403, body: "<html>403</html>" }) });
+  assert.deepStrictEqual(await getStreams("21", "movie"), [], "browser 403 -> []");
+  global.challengeBrowser.execute = async () => {
+    throw new Error("interstitial did not clear");
+  };
+  assert.deepStrictEqual(await getStreams("22", "movie"), [], "browser error -> []");
+  delete global.challengeBrowser;
+  console.log("✓ host challengeBrowser used for the API call; cookies and UA forwarded; 403 / errors -> []");
+
+  // A stalled API is cut at the 5 s timeout (Dart: .timeout(Duration(seconds: 5)))
+  apiMode = "hang";
+  const t0 = Date.now();
+  assert.deepStrictEqual(await getStreams("11", "movie"), []);
+  const took = Date.now() - t0;
+  assert(took >= 4900 && took < 6500, `stalled API must time out at ~5 s, took ${took} ms`);
+  console.log(`✓ stalled API times out in ${took} ms`);
 
   console.log("\n🎉 FlyStream offline tests passed\n");
   process.exit(0); // the stubbed hanging fetch never settles

@@ -1,6 +1,6 @@
 {
   "name": "Direct Streams Providers",
-  "version": "1.0.9",
+  "version": "1.0.10",
   "scrapers": [
     {
       "id": "7movies",
@@ -46,8 +46,8 @@
     {
       "id": "flystream",
       "name": "FlyStream",
-      "description": "flystream.net sources - SkyStream-compatible challenge DOM and mirror scraper",
-      "version": "1.0.1",
+      "description": "flystream.net sources (JSON /api/streams) - direct HLS up to 4K HEVC",
+      "version": "1.0.3",
       "author": "Anh Pham",
       "supportedTypes": [
         "movie",
