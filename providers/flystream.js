@@ -1,6 +1,6 @@
 /**
  * flystream - Built from src/flystream/
- * Generated: 2026-11-08T05:31:17.681Z
+ * Generated: 2026-11-08T06:38:11.960Z
  */
 var __getOwnPropNames = Object.getOwnPropertyNames;
 var __commonJS = (cb, mod) => function __require() {
@@ -125,31 +125,79 @@ var MAX_CACHE_SIZE = 100;
 var CACHE_TTL_MS = 10 * 60 * 1e3;
 var EMPTY_TTL_MS = 5 * 60 * 1e3;
 var PAGE_TIMEOUT_MS = 5e3;
+var EMBED_TIMEOUT_MS = 3500;
+var MAX_EMBEDS = 4;
 var streamCache = new TtlCache(MAX_CACHE_SIZE, CACHE_TTL_MS);
-function buildStream(name, title, url, quality) {
+var MEDIA_REGEX = /https?:\/\/[^"'\s<>\\]+\.(?:m3u8|mp4)(?:[?#][^"'\s<>\\]*)?/gi;
+var NAMED_ENTITIES = { amp: "&", quot: '"', apos: "'", lt: "<", gt: ">" };
+function decodeHtmlEntities(s) {
+  return s.replace(/&(#x[0-9a-f]+|#[0-9]+|[a-z]+);/gi, (whole, ent) => {
+    const e = ent.toLowerCase();
+    if (e[0] === "#") {
+      const code = e[1] === "x" ? parseInt(e.slice(2), 16) : parseInt(e.slice(1), 10);
+      return code > 0 && code <= 1114111 ? String.fromCodePoint(code) : whole;
+    }
+    return Object.prototype.hasOwnProperty.call(NAMED_ENTITIES, e) ? NAMED_ENTITIES[e] : whole;
+  });
+}
+function extractMediaUrls(html) {
+  const text = html.replace(/\\\//g, "/");
+  const urls = [];
+  let match;
+  MEDIA_REGEX.lastIndex = 0;
+  while ((match = MEDIA_REGEX.exec(text)) !== null)
+    urls.push(decodeHtmlEntities(match[0]));
+  return urls;
+}
+function qualityFromUrl(url) {
+  if (/2160p|4k/i.test(url))
+    return "4K";
+  if (/1080p/i.test(url))
+    return "1080p";
+  if (/720p/i.test(url))
+    return "720p";
+  return "Auto";
+}
+function originOf(url) {
+  const m = /^(https?:\/\/[^/?#]+)/i.exec(url);
+  return m ? m[1] : null;
+}
+function buildStream(name, title, url, quality, headers) {
+  const h = headers || STREAM_HEADERS;
   return {
     name,
     title,
     url,
     quality,
-    headers: STREAM_HEADERS,
+    headers: h,
     behaviorHints: {
       notWebReady: true,
       proxyHeaders: {
-        request: STREAM_HEADERS
+        request: h
       }
     },
     subtitles: []
   };
 }
-function fetchPageDOM(url) {
+function fetchPageDOM(url, timeoutMs) {
   return __async(this, null, function* () {
     try {
-      return yield withTimeout(loadPage(url), PAGE_TIMEOUT_MS, "FlyStream page");
+      return yield withTimeout(loadPage(url), timeoutMs || PAGE_TIMEOUT_MS, "FlyStream page");
     } catch (err) {
       console.error("[FlyStream] fetchPageDOM failed:", err.message || err);
       return null;
     }
+  });
+}
+function resolveEmbed(embedUrl) {
+  return __async(this, null, function* () {
+    const html = yield fetchPageDOM(embedUrl, EMBED_TIMEOUT_MS);
+    if (!html)
+      return [];
+    const urls = extractMediaUrls(html);
+    if (!urls.length)
+      console.warn(`[FlyStream] embed has no media link, dropped: ${embedUrl}`);
+    return urls;
   });
 }
 function loadPage(url) {
@@ -272,28 +320,37 @@ function getStreams(tmdbId, mediaType = "movie", season = 1, episode = 1) {
         }
       }
       const iframeRegex = /<iframe[^>]+src="([^"]+)"/gi;
+      const embedUrls = [];
       let match;
-      let mirrorIndex = 1;
       while ((match = iframeRegex.exec(htmlContent)) !== null) {
-        let streamUrl = match[1];
-        if (streamUrl.startsWith("//"))
-          streamUrl = "https:" + streamUrl;
-        if (seenUrls.has(streamUrl))
+        let embedUrl = decodeHtmlEntities(match[1]);
+        if (embedUrl.startsWith("//"))
+          embedUrl = "https:" + embedUrl;
+        if (!/^https?:\/\//i.test(embedUrl) || embedUrls.includes(embedUrl))
           continue;
-        seenUrls.add(streamUrl);
-        streams.push(buildStream(`FlyStream - Mirror #${mirrorIndex}`, `${title} - Mirror #${mirrorIndex}`, streamUrl, "Auto"));
-        mirrorIndex++;
+        embedUrls.push(embedUrl);
       }
-      const mediaRegex = /https?:\/\/[^"'\s<>]+\.(m3u8|mp4)[^"'\s<>]*/gi;
-      while ((match = mediaRegex.exec(htmlContent)) !== null) {
-        const streamUrl = match[0];
+      const embedResults = yield Promise.all(embedUrls.slice(0, MAX_EMBEDS).map(resolveEmbed));
+      let mirrorIndex = 1;
+      embedUrls.slice(0, MAX_EMBEDS).forEach((embedUrl, i) => {
+        const origin = originOf(embedUrl);
+        const headers = origin ? { "User-Agent": MEDIA_UA, Referer: origin + "/", Origin: origin } : STREAM_HEADERS;
+        for (const streamUrl of embedResults[i]) {
+          if (seenUrls.has(streamUrl))
+            continue;
+          seenUrls.add(streamUrl);
+          const q = qualityFromUrl(streamUrl);
+          streams.push(
+            buildStream(`FlyStream - Mirror #${mirrorIndex} (${q})`, `${title} - Mirror #${mirrorIndex} (${q})`, streamUrl, q, headers)
+          );
+          mirrorIndex++;
+        }
+      });
+      for (const streamUrl of extractMediaUrls(htmlContent)) {
         if (seenUrls.has(streamUrl))
           continue;
         seenUrls.add(streamUrl);
-        const is4k = /2160p|4k/i.test(streamUrl);
-        const is1080 = /1080p/i.test(streamUrl);
-        const is720 = /720p/i.test(streamUrl);
-        const q = is4k ? "4K" : is1080 ? "1080p" : is720 ? "720p" : "Auto";
+        const q = qualityFromUrl(streamUrl);
         streams.push(buildStream(`FlyStream - ${q}`, `${title} - Direct (${q})`, streamUrl, q));
       }
       sortByQuality(streams);

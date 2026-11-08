@@ -42,19 +42,63 @@ const EMPTY_TTL_MS = 5 * 60 * 1000;
 // Hard cap on one page load: the old fetch had no timeout, so a stalled site held every
 // Stremio/WuPlay stream response open (the router waits for all providers).
 const PAGE_TIMEOUT_MS = 5000;
+// Iframe mirrors are HTML player pages, not media, so each one is loaded to find the media link
+// inside it. They load in parallel, bounded per embed, so page (5 s) + embeds (3.5 s) stays under
+// the router's 9 s provider deadline. At most MAX_EMBEDS are tried per title.
+const EMBED_TIMEOUT_MS = 3500;
+const MAX_EMBEDS = 4;
 const streamCache = new TtlCache(MAX_CACHE_SIZE, CACHE_TTL_MS);
 
-function buildStream(name, title, url, quality) {
+const MEDIA_REGEX = /https?:\/\/[^"'\s<>\\]+\.(?:m3u8|mp4)(?:[?#][^"'\s<>\\]*)?/gi;
+
+// Single pass, so "&amp;lt;" decodes to "&lt;" once and is never decoded twice.
+const NAMED_ENTITIES = { amp: "&", quot: '"', apos: "'", lt: "<", gt: ">" };
+function decodeHtmlEntities(s) {
+  return s.replace(/&(#x[0-9a-f]+|#[0-9]+|[a-z]+);/gi, (whole, ent) => {
+    const e = ent.toLowerCase();
+    if (e[0] === "#") {
+      const code = e[1] === "x" ? parseInt(e.slice(2), 16) : parseInt(e.slice(1), 10);
+      return code > 0 && code <= 0x10ffff ? String.fromCodePoint(code) : whole;
+    }
+    return Object.prototype.hasOwnProperty.call(NAMED_ENTITIES, e) ? NAMED_ENTITIES[e] : whole;
+  });
+}
+
+// Direct .m3u8/.mp4 links in a page, including JSON-escaped ones ("https:\/\/..."), entity-decoded.
+function extractMediaUrls(html) {
+  const text = html.replace(/\\\//g, "/");
+  const urls = [];
+  let match;
+  MEDIA_REGEX.lastIndex = 0;
+  while ((match = MEDIA_REGEX.exec(text)) !== null) urls.push(decodeHtmlEntities(match[0]));
+  return urls;
+}
+
+function qualityFromUrl(url) {
+  if (/2160p|4k/i.test(url)) return "4K";
+  if (/1080p/i.test(url)) return "1080p";
+  if (/720p/i.test(url)) return "720p";
+  return "Auto";
+}
+
+// "https://host:port/path" -> "https://host:port" (no URL global in QuickJS/Hermes hosts).
+function originOf(url) {
+  const m = /^(https?:\/\/[^/?#]+)/i.exec(url);
+  return m ? m[1] : null;
+}
+
+function buildStream(name, title, url, quality, headers) {
+  const h = headers || STREAM_HEADERS;
   return {
     name: name,
     title: title,
     url: url,
     quality: quality,
-    headers: STREAM_HEADERS,
+    headers: h,
     behaviorHints: {
       notWebReady: true,
       proxyHeaders: {
-        request: STREAM_HEADERS,
+        request: h,
       },
     },
     subtitles: [],
@@ -65,13 +109,22 @@ function buildStream(name, title, url, quality) {
  * Executes request through host challenge_browser context if present,
  * or falls back to direct HTTP fetch with browser headers.
  */
-async function fetchPageDOM(url) {
+async function fetchPageDOM(url, timeoutMs) {
   try {
-    return await withTimeout(loadPage(url), PAGE_TIMEOUT_MS, "FlyStream page");
+    return await withTimeout(loadPage(url), timeoutMs || PAGE_TIMEOUT_MS, "FlyStream page");
   } catch (err) {
     console.error("[FlyStream] fetchPageDOM failed:", err.message || err);
     return null;
   }
+}
+
+// Loads one iframe player page and returns the media links inside it ([] when none or on error).
+async function resolveEmbed(embedUrl) {
+  const html = await fetchPageDOM(embedUrl, EMBED_TIMEOUT_MS);
+  if (!html) return [];
+  const urls = extractMediaUrls(html);
+  if (!urls.length) console.warn(`[FlyStream] embed has no media link, dropped: ${embedUrl}`);
+  return urls;
 }
 
 // Loads one page: host challengeBrowser first when present, else a plain fetch.
@@ -141,7 +194,9 @@ async function search(query) {
             id: item.id,
           }));
         }
-      } catch (e) {}
+      } catch (e) {
+        // Ignore JSON parsing errors from the upstream payload
+      }
     }
 
     // Fallback: parse card links from HTML DOM
@@ -227,32 +282,39 @@ async function getStreams(tmdbId, mediaType = "movie", season = 1, episode = 1) 
       }
     }
 
-    // 2. Extract iframe and embedded player mirrors
+    // 2. Iframe mirrors: an iframe src is an HTML player page, so it is never returned as a
+    //    stream itself. Each embed is loaded (bounded, in parallel) and the media links inside it
+    //    become streams sent with the embed's own Referer/Origin. An embed without one is dropped.
     const iframeRegex = /<iframe[^>]+src="([^"]+)"/gi;
+    const embedUrls = [];
     let match;
-    let mirrorIndex = 1;
     while ((match = iframeRegex.exec(htmlContent)) !== null) {
-      let streamUrl = match[1];
-      if (streamUrl.startsWith("//")) streamUrl = "https:" + streamUrl;
-      if (seenUrls.has(streamUrl)) continue;
-      seenUrls.add(streamUrl);
-
-      streams.push(buildStream(`FlyStream - Mirror #${mirrorIndex}`, `${title} - Mirror #${mirrorIndex}`, streamUrl, "Auto"));
-      mirrorIndex++;
+      let embedUrl = decodeHtmlEntities(match[1]);
+      if (embedUrl.startsWith("//")) embedUrl = "https:" + embedUrl;
+      if (!/^https?:\/\//i.test(embedUrl) || embedUrls.includes(embedUrl)) continue;
+      embedUrls.push(embedUrl);
     }
+    const embedResults = await Promise.all(embedUrls.slice(0, MAX_EMBEDS).map(resolveEmbed));
+    let mirrorIndex = 1;
+    embedUrls.slice(0, MAX_EMBEDS).forEach((embedUrl, i) => {
+      const origin = originOf(embedUrl);
+      const headers = origin ? { "User-Agent": MEDIA_UA, Referer: origin + "/", Origin: origin } : STREAM_HEADERS;
+      for (const streamUrl of embedResults[i]) {
+        if (seenUrls.has(streamUrl)) continue;
+        seenUrls.add(streamUrl);
+        const q = qualityFromUrl(streamUrl);
+        streams.push(
+          buildStream(`FlyStream - Mirror #${mirrorIndex} (${q})`, `${title} - Mirror #${mirrorIndex} (${q})`, streamUrl, q, headers)
+        );
+        mirrorIndex++;
+      }
+    });
 
-    // 3. Extract direct HLS (.m3u8) or MP4 video streams if exposed in DOM
-    const mediaRegex = /https?:\/\/[^"'\s<>]+\.(m3u8|mp4)[^"'\s<>]*/gi;
-    while ((match = mediaRegex.exec(htmlContent)) !== null) {
-      const streamUrl = match[0];
+    // 3. Direct HLS (.m3u8) or MP4 links exposed in the page itself
+    for (const streamUrl of extractMediaUrls(htmlContent)) {
       if (seenUrls.has(streamUrl)) continue;
       seenUrls.add(streamUrl);
-
-      const is4k = /2160p|4k/i.test(streamUrl);
-      const is1080 = /1080p/i.test(streamUrl);
-      const is720 = /720p/i.test(streamUrl);
-      const q = is4k ? "4K" : is1080 ? "1080p" : is720 ? "720p" : "Auto";
-
+      const q = qualityFromUrl(streamUrl);
       streams.push(buildStream(`FlyStream - ${q}`, `${title} - Direct (${q})`, streamUrl, q));
     }
 
