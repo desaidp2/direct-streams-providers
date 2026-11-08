@@ -1,6 +1,6 @@
 /**
  * flystream - Built from src/flystream/
- * Generated: 2026-11-08T06:38:11.960Z
+ * Generated: 2026-11-08T06:42:26.801Z
  */
 var __getOwnPropNames = Object.getOwnPropertyNames;
 var __commonJS = (cb, mod) => function __require() {

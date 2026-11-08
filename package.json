@@ -1,6 +1,6 @@
 {
     "name": "direct-streams-providers",
-    "version": "1.0.8",
+    "version": "1.0.9",
     "description": "Direct fast stream providers (7Movies, Movy, FlyStream) for Nuvio, WuPlay, and Stremio",
     "scripts": {
         "build": "node build.js",

@@ -20,7 +20,7 @@ const { handleSubtitleProxy } = require("./subtitle-proxy");
 
 const MANIFEST = {
   id: "community.directstreamsproviders",
-  version: "1.0.8",
+  version: "1.0.9",
   name: "Direct Streams Providers",
   description: "Fast direct streams from 7Movies, Movy & FlyStream up to 4K with multilingual subtitles (No Debrid Needed)",
   resources: ["stream", "subtitles"],

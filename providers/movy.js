@@ -1,6 +1,6 @@
 /**
  * movy - Built from src/movy/
- * Generated: 2026-11-08T05:31:17.685Z
+ * Generated: 2026-11-08T06:42:26.803Z
  */
 var __getOwnPropNames = Object.getOwnPropertyNames;
 var __commonJS = (cb, mod) => function __require() {
