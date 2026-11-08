@@ -19,8 +19,10 @@ const fast = (tag, n) => async () => {
   return Array.from({ length: n }, (_, i) => ({ name: tag + i, url: `https://${tag}/${i}`, quality: "1080p", subtitles: subs }));
 };
 let flyMode = "hang";
-const fly = async () => {
+let flyArgs = null;
+const fly = async (...args) => {
   calls.fly++;
+  flyArgs = args;
   if (flyMode === "hang") return new Promise(() => {});
   if (flyMode === "throw") throw new Error("boom");
   return [{ name: "fly", url: "https://fly/1", quality: "Auto", subtitles: [] }];
@@ -100,6 +102,28 @@ async function run() {
   assert.strictEqual(cookieRes.status, 200);
   console.log("✓ companion endpoints /companion/flystream and /cookies OK");
   console.log("✓ 400 on malformed path / non-http subtitle url; subtitles + manifest routes OK");
+
+  // 7. Companion route passes skipCompanion (server must never query its own companion)
+  flyArgs = null;
+  await route("/companion/flystream", { tmdbId: "77", type: "movie" }, "http://h");
+  assert(flyArgs && flyArgs[4] && flyArgs[4].skipCompanion === true, "companion route must pass skipCompanion");
+  console.log("✓ /companion/flystream calls getStreams with skipCompanion");
+
+  // 8. Serve-time injection: marker replaced; missing marker throws instead of shipping silently
+  const { injectCompanionUrl } = require("./src/stremio/router");
+  const out = injectCompanionUrl('x;var BUILD_COMPANION_URL = true ? "" : "";y', "http://pi:7070,http://b:1");
+  assert(out.includes('var BUILD_COMPANION_URL = "http://pi:7070,http://b:1";'));
+  assert.throws(() => injectCompanionUrl("no marker here", "http://pi"));
+  const built = require("fs").readFileSync(path.join(__dirname, "providers/flystream.js"), "utf8");
+  assert(/var BUILD_COMPANION_URL\s*=[^;]+;/.test(built), "built providers/flystream.js must keep the injection marker");
+  console.log("✓ companion URL injection: marker present in build, replaced, missing marker throws");
+
+  // 9. Manifest body is cached: same string object until manifest.json mtime changes
+  const m1 = (await route("/manifest.json", {}, "")).body;
+  const m2 = (await route("/manifest.json", {}, "")).body;
+  assert.strictEqual(m1, m2);
+  assert(Array.isArray(JSON.parse(m1).scrapers), "Nuvio scrapers merged into manifest");
+  console.log("✓ manifest served from mtime cache with Nuvio scrapers merged");
 
   console.log("\n🎉 Offline router tests passed\n");
   process.exit(0); // the stub flystream promise never settles

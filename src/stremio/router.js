@@ -20,14 +20,44 @@ const { getStreams: getFlyStreamStreams } = require("../flystream/index");
 const { CORS_HEADERS } = require("./http-constants");
 const { handleSubtitleProxy } = require("./subtitle-proxy");
 
-function getNuvioManifest() {
+// Read-through file cache keyed by path, invalidated by mtime: one stat() per request instead of
+// a full read + parse (+ regex rewrite for providers). A rebuild (new mtime) is picked up live.
+// Bounded by the number of distinct files under providers/ plus the manifest.
+const fileCache = new Map();
+function readCached(filepath, transform) {
   try {
-    const rootManifestPath = pathModule.join(__dirname, "../../manifest.json");
-    if (fs.existsSync(rootManifestPath)) {
-      return JSON.parse(fs.readFileSync(rootManifestPath, "utf8"));
-    }
-  } catch (_) {}
-  return null;
+    const mtime = fs.statSync(filepath).mtimeMs;
+    const hit = fileCache.get(filepath);
+    if (hit && hit.mtime === mtime) return hit.value;
+    const value = transform(fs.readFileSync(filepath, "utf8"));
+    fileCache.set(filepath, { mtime, value });
+    return value;
+  } catch (err) {
+    // Missing file / no fs on edge runtimes is a plain 404; anything else is worth a log line.
+    if (err && err.code !== "ENOENT") console.warn(`[StremioRouter] ${filepath}: ${err.message || err}`);
+    return null;
+  }
+}
+
+const ROOT_MANIFEST_PATH = pathModule.join(__dirname, "../../manifest.json");
+// The combined manifest body is built once per manifest.json mtime, not per request.
+function getManifestBody() {
+  const body = readCached(ROOT_MANIFEST_PATH, (text) => {
+    const combined = Object.assign({}, MANIFEST);
+    const root = JSON.parse(text);
+    if (root && Array.isArray(root.scrapers)) combined.scrapers = root.scrapers;
+    return JSON.stringify(combined, null, 2);
+  });
+  return body || JSON.stringify(MANIFEST, null, 2);
+}
+
+// Serve-time companion URL injection; tracked provider files never carry LAN addresses.
+// Throws if the build output no longer has the marker, so a bundler change cannot silently
+// ship a provider without its companion URL.
+const COMPANION_MARKER = /var BUILD_COMPANION_URL\s*=[^;]+;/;
+function injectCompanionUrl(code, url) {
+  if (!COMPANION_MARKER.test(code)) throw new Error("BUILD_COMPANION_URL marker missing in providers/flystream.js");
+  return code.replace(COMPANION_MARKER, () => `var BUILD_COMPANION_URL = ${JSON.stringify(url)};`);
 }
 
 const MANIFEST = {
@@ -248,16 +278,7 @@ async function route(path, query = {}, baseUrl = "") {
 
   // Route 1: Root or manifest (dual compatibility for Stremio and Nuvio plugin manifest)
   if (cleanPath === "" || cleanPath === "/" || cleanPath === "/manifest.json") {
-    const combinedManifest = Object.assign({}, MANIFEST);
-    const rootNuvioManifest = getNuvioManifest();
-    if (rootNuvioManifest && Array.isArray(rootNuvioManifest.scrapers)) {
-      combinedManifest.scrapers = rootNuvioManifest.scrapers;
-    }
-    return {
-      status: 200,
-      headers: CORS_HEADERS,
-      body: JSON.stringify(combinedManifest, null, 2),
-    };
+    return { status: 200, headers: CORS_HEADERS, body: getManifestBody() };
   }
 
   // Route 2: Subtitle proxy endpoint /subtitles/file.srt?url=...
@@ -297,7 +318,7 @@ async function route(path, query = {}, baseUrl = "") {
     const mediaType = query.type || query.mediaType || "movie";
     const season = query.season ? parseInt(query.season, 10) : 1;
     const episode = query.episode ? parseInt(query.episode, 10) : 1;
-    const streams = tmdbId ? await getFlyStreamStreams(tmdbId, mediaType, season, episode) : [];
+    const streams = tmdbId ? await getFlyStreamStreams(tmdbId, mediaType, season, episode, { skipCompanion: true }) : [];
     return {
       status: 200,
       headers: CORS_HEADERS,
@@ -322,17 +343,12 @@ async function route(path, query = {}, baseUrl = "") {
   if (providerMatch) {
     const filename = providerMatch[1];
     const filepath = pathModule.join(__dirname, "../../providers", filename);
-    if (fs.existsSync(filepath)) {
-      let code = fs.readFileSync(filepath, "utf8");
-      // Dynamically inject local companion URL at serve-time from environment
-      // so tracked provider files never leak private IPs or LAN hostnames in git.
-      const envCompanionUrl = process.env.FLYSTREAM_COMPANION_URL;
-      if (filename === "flystream.js" && envCompanionUrl) {
-        code = code.replace(
-          /var BUILD_COMPANION_URL\s*=[^;]+;/,
-          `var BUILD_COMPANION_URL = ${JSON.stringify(envCompanionUrl)};`
-        );
-      }
+    // The env is fixed for the process lifetime, so caching the injected text per mtime is safe.
+    const envCompanionUrl = typeof process !== "undefined" && process.env ? process.env.FLYSTREAM_COMPANION_URL : "";
+    const code = readCached(filepath, (text) =>
+      filename === "flystream.js" && envCompanionUrl ? injectCompanionUrl(text, envCompanionUrl) : text
+    );
+    if (code !== null) {
       return {
         status: 200,
         headers: { ...CORS_HEADERS, "Content-Type": "application/javascript; charset=utf-8" },
@@ -350,6 +366,7 @@ async function route(path, query = {}, baseUrl = "") {
 }
 
 module.exports = {
+  injectCompanionUrl,
   MANIFEST,
   CORS_HEADERS,
   route,

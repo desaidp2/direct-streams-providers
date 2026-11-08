@@ -186,54 +186,68 @@ async function fetchViaHostBrowser(cb, url, title) {
 }
 
 // Candidate companion endpoints. Configure via FLYSTREAM_COMPANION_URL (in .env or app settings).
-// Supports compile-time injection during build and comma-separated URLs for multi-device setups.
+// Both the build/serve-time value and the env value may be comma-separated lists.
+//
+// There is deliberately NO implicit http://127.0.0.1 fallback: on the TV, 127.0.0.1 is the TV
+// itself (nothing listens there), and on the server it is the server's own /companion route, which
+// would call itself again on every hop (one request fanned out into ~5k self-requests in 8.7 s).
 const BUILD_COMPANION_URL =
   typeof __FLYSTREAM_COMPANION_URL__ !== "undefined" ? __FLYSTREAM_COMPANION_URL__ : "";
 
+// Companion budget: meta lookup (2 s) + this stays under the router's / app's 9 s deadline.
+const COMPANION_TIMEOUT_MS = 6000;
+
+function splitUrls(v) {
+  return v ? String(v).split(",").map((u) => u.trim().replace(/\/+$/, "")).filter(Boolean) : [];
+}
+
 function getCompanionCandidates() {
-  const envUrl = typeof process !== "undefined" && process.env ? process.env.FLYSTREAM_COMPANION_URL : null;
-  const list = [];
-  if (BUILD_COMPANION_URL) list.push(BUILD_COMPANION_URL);
-  if (envUrl) {
-    envUrl
-      .split(",")
-      .map((s) => s.trim())
-      .filter(Boolean)
-      .forEach((u) => list.push(u));
+  const envUrl = typeof process !== "undefined" && process.env ? process.env.FLYSTREAM_COMPANION_URL : "";
+  return [...new Set(splitUrls(BUILD_COMPANION_URL).concat(splitUrls(envUrl)))];
+}
+
+// One companion host. Resolves { ok: true, streams } or rejects, so the caller can race hosts.
+async function queryCompanion(host, qs) {
+  const endpoint = `${host}/companion/flystream?${qs}`;
+  console.log(`[FlyStream] Querying companion: ${endpoint}`);
+  const res = await withTimeout(fetch(endpoint), COMPANION_TIMEOUT_MS, "FlyStream Companion");
+  if (!res || !res.ok) throw new Error(`HTTP ${res && res.status}`);
+  const data = await res.json();
+  if (!data || !data.ok || !Array.isArray(data.streams) || data.streams.length === 0) {
+    throw new Error("no streams");
   }
-  // Generic local fallback when companion runs on the same machine
-  list.push("http://127.0.0.1:7070");
-  return [...new Set(list)];
+  return { ok: true, streams: data.streams, via: "companion" };
+}
+
+// First success wins (hand-rolled Promise.any: not available on every QuickJS / Hermes build).
+// Worst case is one COMPANION_TIMEOUT_MS for all hosts together, not one per host.
+function firstSuccess(promises) {
+  return new Promise((resolve) => {
+    let pending = promises.length;
+    if (!pending) return resolve(null);
+    promises.forEach((p) =>
+      p.then(resolve, (err) => {
+        console.warn(`[FlyStream] Companion failed: ${(err && err.message) || err}`);
+        if (--pending === 0) resolve(null);
+      })
+    );
+  });
 }
 
 /**
  * When running client-side (e.g. QuickJS on Android TV) without a host browser,
- * query the companion server (e.g. on a local Raspberry Pi or server configured
- * via FLYSTREAM_COMPANION_URL) which has the challengeBrowser session and can
- * return streams with the required session cookies.
+ * query the companion server(s) configured via FLYSTREAM_COMPANION_URL, which hold the
+ * challengeBrowser session and return streams with the required session cookies.
  */
 async function fetchViaCompanion(query) {
   const candidates = getCompanionCandidates();
+  if (!candidates.length) return null;
   const qs = buildApiParams(query)
     .map(([k, v]) => encodeURIComponent(k) + "=" + encodeURIComponent(v))
     .join("&");
-  for (const host of candidates) {
-    try {
-      const endpoint = `${host.replace(/\/+$/, "")}/companion/flystream?${qs}`;
-      console.log(`[FlyStream] Querying companion: ${endpoint}`);
-      const res = await withTimeout(fetch(endpoint), 8000, "FlyStream Companion");
-      if (res && res.ok) {
-        const data = await res.json();
-        if (data && data.ok && Array.isArray(data.streams) && data.streams.length > 0) {
-          console.log(`[FlyStream] Companion returned ${data.streams.length} stream(s)`);
-          return { ok: true, streams: data.streams, via: "companion" };
-        }
-      }
-    } catch (err) {
-      console.warn(`[FlyStream] Companion ${host} failed: ${err.message || err}`);
-    }
-  }
-  return null;
+  const result = await firstSuccess(candidates.map((host) => queryCompanion(host, qs)));
+  if (result) console.log(`[FlyStream] Companion returned ${result.streams.length} stream(s)`);
+  return result;
 }
 
 /**
@@ -243,15 +257,16 @@ async function fetchViaCompanion(query) {
  * call goes through it; checks LAN companion when running without a browser (Nuvio);
  * plain fetch is used as the last fallback.
  */
-async function fetchApiStreams(query) {
+async function fetchApiStreams(query, opts) {
   const cb = hostChallengeBrowser();
   if (cb) {
     const url = buildApiUrl(buildApiParams(query));
     return fetchViaHostBrowser(cb, url, query.title);
   }
 
-  // Not in host browser context (e.g. Nuvio on Android TV): check LAN companion
-  const companionResult = await fetchViaCompanion(query);
+  // Not in host browser context (e.g. Nuvio on Android TV): check LAN companion.
+  // The server's own /companion route passes skipCompanion so it can never call itself.
+  const companionResult = opts && opts.skipCompanion ? null : await fetchViaCompanion(query);
   if (companionResult && companionResult.ok) {
     return companionResult;
   }
@@ -276,4 +291,5 @@ module.exports = {
   normalizeQuality,
   mapApiStreams,
   fetchApiStreams,
+  getCompanionCandidates,
 };

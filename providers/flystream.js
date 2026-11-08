@@ -1,6 +1,6 @@
 /**
  * flystream - Built from src/flystream/
- * Generated: 2026-11-08T10:16:35.194Z
+ * Generated: 2026-11-08T10:28:14.477Z
  */
 var __getOwnPropNames = Object.getOwnPropertyNames;
 var __commonJS = (cb, mod) => function __require() {
@@ -251,48 +251,62 @@ ${details || "Direct HLS Stream"}`,
       });
     }
     var BUILD_COMPANION_URL = true ? "" : "";
+    var COMPANION_TIMEOUT_MS = 6e3;
+    function splitUrls(v) {
+      return v ? String(v).split(",").map((u) => u.trim().replace(/\/+$/, "")).filter(Boolean) : [];
+    }
     function getCompanionCandidates() {
-      const envUrl = typeof process !== "undefined" && process.env ? process.env.FLYSTREAM_COMPANION_URL : null;
-      const list = [];
-      if (BUILD_COMPANION_URL)
-        list.push(BUILD_COMPANION_URL);
-      if (envUrl) {
-        envUrl.split(",").map((s) => s.trim()).filter(Boolean).forEach((u) => list.push(u));
-      }
-      list.push("http://127.0.0.1:7070");
-      return [...new Set(list)];
+      const envUrl = typeof process !== "undefined" && process.env ? process.env.FLYSTREAM_COMPANION_URL : "";
+      return [...new Set(splitUrls(BUILD_COMPANION_URL).concat(splitUrls(envUrl)))];
+    }
+    function queryCompanion(host, qs) {
+      return __async(this, null, function* () {
+        const endpoint = `${host}/companion/flystream?${qs}`;
+        console.log(`[FlyStream] Querying companion: ${endpoint}`);
+        const res = yield withTimeout2(fetch(endpoint), COMPANION_TIMEOUT_MS, "FlyStream Companion");
+        if (!res || !res.ok)
+          throw new Error(`HTTP ${res && res.status}`);
+        const data = yield res.json();
+        if (!data || !data.ok || !Array.isArray(data.streams) || data.streams.length === 0) {
+          throw new Error("no streams");
+        }
+        return { ok: true, streams: data.streams, via: "companion" };
+      });
+    }
+    function firstSuccess(promises) {
+      return new Promise((resolve) => {
+        let pending = promises.length;
+        if (!pending)
+          return resolve(null);
+        promises.forEach(
+          (p) => p.then(resolve, (err) => {
+            console.warn(`[FlyStream] Companion failed: ${err && err.message || err}`);
+            if (--pending === 0)
+              resolve(null);
+          })
+        );
+      });
     }
     function fetchViaCompanion(query) {
       return __async(this, null, function* () {
         const candidates = getCompanionCandidates();
+        if (!candidates.length)
+          return null;
         const qs = buildApiParams(query).map(([k, v]) => encodeURIComponent(k) + "=" + encodeURIComponent(v)).join("&");
-        for (const host of candidates) {
-          try {
-            const endpoint = `${host.replace(/\/+$/, "")}/companion/flystream?${qs}`;
-            console.log(`[FlyStream] Querying companion: ${endpoint}`);
-            const res = yield withTimeout2(fetch(endpoint), 8e3, "FlyStream Companion");
-            if (res && res.ok) {
-              const data = yield res.json();
-              if (data && data.ok && Array.isArray(data.streams) && data.streams.length > 0) {
-                console.log(`[FlyStream] Companion returned ${data.streams.length} stream(s)`);
-                return { ok: true, streams: data.streams, via: "companion" };
-              }
-            }
-          } catch (err) {
-            console.warn(`[FlyStream] Companion ${host} failed: ${err.message || err}`);
-          }
-        }
-        return null;
+        const result = yield firstSuccess(candidates.map((host) => queryCompanion(host, qs)));
+        if (result)
+          console.log(`[FlyStream] Companion returned ${result.streams.length} stream(s)`);
+        return result;
       });
     }
-    function fetchApiStreams2(query) {
+    function fetchApiStreams2(query, opts) {
       return __async(this, null, function* () {
         const cb = hostChallengeBrowser();
         if (cb) {
           const url2 = buildApiUrl(buildApiParams(query));
           return fetchViaHostBrowser(cb, url2, query.title);
         }
-        const companionResult = yield fetchViaCompanion(query);
+        const companionResult = opts && opts.skipCompanion ? null : yield fetchViaCompanion(query);
         if (companionResult && companionResult.ok) {
           return companionResult;
         }
@@ -316,7 +330,8 @@ ${details || "Direct HLS Stream"}`,
       buildApiUrl,
       normalizeQuality,
       mapApiStreams,
-      fetchApiStreams: fetchApiStreams2
+      fetchApiStreams: fetchApiStreams2,
+      getCompanionCandidates
     };
   }
 });
@@ -388,6 +403,7 @@ var CACHE_TTL_MS = 10 * 60 * 1e3;
 var EMPTY_TTL_MS = 5 * 60 * 1e3;
 var PAGE_TIMEOUT_MS = 5e3;
 var streamCache = new TtlCache(MAX_CACHE_SIZE, CACHE_TTL_MS);
+var inflight = /* @__PURE__ */ new Map();
 function fetchPageDOM(url, timeoutMs) {
   return __async(this, null, function* () {
     try {
@@ -478,7 +494,7 @@ function search(query) {
     }
   });
 }
-function getStreams(tmdbId, mediaType = "movie", season = 1, episode = 1) {
+function getStreams(tmdbId, mediaType = "movie", season = 1, episode = 1, opts) {
   return __async(this, null, function* () {
     if (!tmdbId)
       return [];
@@ -489,6 +505,16 @@ function getStreams(tmdbId, mediaType = "movie", season = 1, episode = 1) {
     const cached = streamCache.get(cacheKey);
     if (cached)
       return cached;
+    const pending = inflight.get(cacheKey);
+    if (pending)
+      return pending;
+    const work = resolveStreams(tmdbId, normType, s, e, cacheKey, opts).finally(() => inflight.delete(cacheKey));
+    inflight.set(cacheKey, work);
+    return work;
+  });
+}
+function resolveStreams(tmdbId, normType, s, e, cacheKey, opts) {
+  return __async(this, null, function* () {
     try {
       const meta = yield fetchTitleMetadata(String(tmdbId), normType);
       const result = yield fetchApiStreams({
@@ -499,7 +525,7 @@ function getStreams(tmdbId, mediaType = "movie", season = 1, episode = 1) {
         year: meta.year,
         season: s,
         episode: e
-      });
+      }, opts);
       if (!result.ok)
         console.warn(`[FlyStream] API call failed (${result.reason}) for ${cacheKey}`);
       const streams = result.ok ? sortByQuality(result.streams) : [];

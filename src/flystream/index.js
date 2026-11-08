@@ -35,6 +35,10 @@ const EMPTY_TTL_MS = 5 * 60 * 1000;
 // Stremio/WuPlay stream response open (the router waits for all providers).
 const PAGE_TIMEOUT_MS = 5000;
 const streamCache = new TtlCache(MAX_CACHE_SIZE, CACHE_TTL_MS);
+// In-flight lookups by cache key: concurrent identical requests share one upstream call.
+// The router dedupes its own /stream route, but the /companion route calls getStreams directly,
+// and the TV can fire the same title twice (resume + stream sheet). Size <= concurrent requests.
+const inflight = new Map();
 
 /**
  * Executes request through host challenge_browser context if present,
@@ -161,9 +165,10 @@ async function search(query) {
  * @param {string} mediaType "movie" or "tv"
  * @param {number} season Season number (for TV)
  * @param {number} episode Episode number (for TV)
+ * @param {{skipCompanion?: boolean}} [opts] skipCompanion: set by the server's /companion route
  * @returns {Promise<Array>} Array of stream objects
  */
-async function getStreams(tmdbId, mediaType = "movie", season = 1, episode = 1) {
+async function getStreams(tmdbId, mediaType = "movie", season = 1, episode = 1, opts) {
   if (!tmdbId) return [];
 
   const normType = mediaType === "series" || mediaType === "tv" ? "tv" : "movie";
@@ -173,7 +178,15 @@ async function getStreams(tmdbId, mediaType = "movie", season = 1, episode = 1) 
 
   const cached = streamCache.get(cacheKey);
   if (cached) return cached;
+  const pending = inflight.get(cacheKey);
+  if (pending) return pending;
 
+  const work = resolveStreams(tmdbId, normType, s, e, cacheKey, opts).finally(() => inflight.delete(cacheKey));
+  inflight.set(cacheKey, work);
+  return work;
+}
+
+async function resolveStreams(tmdbId, normType, s, e, cacheKey, opts) {
   try {
     const meta = await fetchTitleMetadata(String(tmdbId), normType);
     const result = await fetchApiStreams({
@@ -184,7 +197,7 @@ async function getStreams(tmdbId, mediaType = "movie", season = 1, episode = 1) 
       year: meta.year,
       season: s,
       episode: e,
-    });
+    }, opts);
     if (!result.ok) console.warn(`[FlyStream] API call failed (${result.reason}) for ${cacheKey}`);
 
     const streams = result.ok ? sortByQuality(result.streams) : [];

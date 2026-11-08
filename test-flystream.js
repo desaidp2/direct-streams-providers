@@ -36,6 +36,7 @@ global.fetch = async (url, opts) => {
     }
     return json({ title: "Film: One", release_date: "2008-07-16", external_ids: { imdb_id: "tt0468569" } });
   }
+  if (global.__companion && url.includes("/companion/flystream?")) return global.__companion(url);
   if (url.startsWith("https://flystream.net/api/streams?")) {
     if (apiMode === "hang") return new Promise(() => {});
     if (apiMode === "403") return json("", 403);
@@ -196,6 +197,60 @@ async function runTests() {
   const took = Date.now() - t0;
   assert(took >= 4900 && took < 6500, `stalled API must time out at ~5 s, took ${took} ms`);
   console.log(`✓ stalled API times out in ${took} ms`);
+
+  // --- companion client (src module; fetch stub routes /companion/flystream to __companion) ---
+  delete global.challengeBrowser;
+  apiMode = "ok";
+  const COMP_STREAM = { name: "FlyStream - 4K", url: "https://flystream.net/source-hls/x/index.m3u8", quality: "4K" };
+  const compHits = [];
+  global.__companion = (url) => {
+    compHits.push(url);
+    if (url.startsWith("http://slow")) return new Promise(() => {});
+    if (url.startsWith("http://dead")) return Promise.reject(new Error("ECONNREFUSED"));
+    return Promise.resolve(json({ ok: true, streams: [COMP_STREAM] }));
+  };
+
+  // No companion configured -> no companion request at all (the old implicit 127.0.0.1 is gone).
+  delete process.env.FLYSTREAM_COMPANION_URL;
+  assert.deepStrictEqual(api.getCompanionCandidates(), []);
+  await api.fetchApiStreams({ mediaType: "movie", title: "T", tmdbId: 1 });
+  assert.strictEqual(compHits.length, 0, "no companion request without FLYSTREAM_COMPANION_URL");
+
+  // Comma list, trailing slashes trimmed, duplicates dropped.
+  process.env.FLYSTREAM_COMPANION_URL = "http://slow:1/, http://dead:2,http://good:3,http://good:3/";
+  assert.deepStrictEqual(api.getCompanionCandidates(), ["http://slow:1", "http://dead:2", "http://good:3"]);
+
+  // Hosts are raced: a hung first host and a dead second do not delay the good third.
+  let t1 = Date.now();
+  const raced = await api.fetchApiStreams({ mediaType: "movie", title: "T", tmdbId: 2 });
+  assert.strictEqual(raced.via, "companion");
+  assert.strictEqual(raced.streams.length, 1);
+  assert(Date.now() - t1 < 500, `race must not wait for the hung host, took ${Date.now() - t1} ms`);
+  console.log(`✓ companion hosts raced in parallel (${Date.now() - t1} ms with one host hung)`);
+
+  // skipCompanion (server's own /companion route) never calls a companion -> no self-recursion.
+  compHits.length = 0;
+  const skipped = await api.fetchApiStreams({ mediaType: "movie", title: "T", tmdbId: 3 }, { skipCompanion: true });
+  assert.strictEqual(compHits.length, 0, "skipCompanion must not query any companion");
+  assert.strictEqual(skipped.ok, true); // fell through to the direct API stub
+  console.log("✓ skipCompanion: zero companion requests (server cannot call itself)");
+
+  // All hosts failing -> bounded by one companion timeout, then the direct API fallback.
+  process.env.FLYSTREAM_COMPANION_URL = "http://dead:2";
+  const fellBack = await api.fetchApiStreams({ mediaType: "movie", title: "T", tmdbId: 4 });
+  assert.strictEqual(fellBack.ok, true);
+  assert.notStrictEqual(fellBack.via, "companion");
+  delete process.env.FLYSTREAM_COMPANION_URL;
+  delete global.__companion;
+  console.log("✓ all companions down -> direct API fallback");
+
+  // In-flight dedupe: concurrent identical getStreams share one API call.
+  calls.length = 0;
+  const [a, b, c] = await Promise.all([getStreams(4242, "movie"), getStreams(4242, "movie"), getStreams(4242, "movie")]);
+  assert.strictEqual(apiCalls().length, 1, `3 concurrent requests -> 1 API call, got ${apiCalls().length}`);
+  assert.strictEqual(a, b);
+  assert.strictEqual(b, c);
+  console.log("✓ 3 concurrent identical getStreams -> 1 API call");
 
   console.log("\n🎉 FlyStream offline tests passed\n");
   process.exit(0); // the stubbed hanging fetch never settles
