@@ -4,7 +4,7 @@
  */
 const assert = require("assert");
 const { qualityRank, sortByQuality, withTimeout, fetchWithTimeout, TtlCache } = require("./src/shared/provider-utils");
-const { parseMasterPlaylist } = require("./src/7movies/hls-master-playlist-parser");
+const { parseMasterPlaylist } = require("./src/shared/hls-master-playlist-parser");
 const { b64decode, utf8decode, keystream, decryptSources } = require("./src/movy/mvm1-byte-codecs");
 
 async function run() {
@@ -44,9 +44,9 @@ async function run() {
     "#EXT-X-STREAM-INF:BANDWIDTH=100000\r\naudio.m3u8\r\n";
   const v = parseMasterPlaylist(pl, "https://cdn/x/master.m3u8");
   assert.deepStrictEqual(v, [
-    { url: "https://cdn/x/360/index.m3u8", height: 360 },
-    { url: "https://cdn2/1080.m3u8", height: 1080 },
-    { url: "https://cdn/x/audio.m3u8", height: null },
+    { url: "https://cdn/x/360/index.m3u8", width: 640, height: 360, bandwidth: 800000 },
+    { url: "https://cdn2/1080.m3u8", width: 1920, height: 1080, bandwidth: 5000000 },
+    { url: "https://cdn/x/audio.m3u8", width: null, height: null, bandwidth: 100000 },
   ]);
   console.log("✓ HLS parser reads RESOLUTION (old regex labelled every variant Auto)");
 

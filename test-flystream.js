@@ -37,6 +37,19 @@ global.fetch = async (url, opts) => {
     return json({ title: "Film: One", release_date: "2008-07-16", external_ids: { imdb_id: "tt0468569" } });
   }
   if (global.__companion && url.includes("/companion/flystream?")) return global.__companion(url);
+  if (global.__masters && url in global.__masters) {
+    global.__masterHits.push({ url, headers: (opts && opts.headers) || {} });
+    return json(global.__masters[url]);
+  }
+  if (global.__apiBody && url.startsWith("https://flystream.net/api/streams?")) {
+    if (global.__apiClockJump) {
+      const real = Date.now;
+      const jump = global.__apiClockJump;
+      Date.now = () => real() + jump;
+      global.__restoreClock = () => (Date.now = real);
+    }
+    return json(global.__apiBody);
+  }
   if (url.startsWith("https://flystream.net/api/streams?")) {
     if (apiMode === "hang") return new Promise(() => {});
     if (apiMode === "403") return json("", 403);
@@ -285,6 +298,79 @@ async function runTests() {
   assert.strictEqual(execs, 1, "retry is a cache hit, not a second browser call");
   delete global.challengeBrowser;
   console.log(`✓ late fill: timed-out browser call cached on arrival (${second.length} streams, ${execs} browser call)`);
+
+  // --- HLS variant split (masters as observed on the site, 2026-11-08)
+  const { qualityFromResolution } = require("./src/flystream/flystream-hls-variant-expansion.js");
+  const qtab = [[3840, 2160, "4K"], [1920, 1080, "1080p"], [1280, 720, "720p"], [1920, 800, "1080p"], [1280, 534, "720p"],
+    [640, 266, "360p"], [854, 480, "480p"], [2560, 1440, "1440p"], [null, 1080, "1080p"], [null, null, null]];
+  for (const [w, h, q] of qtab) assert.strictEqual(qualityFromResolution(w, h), q, `${w}x${h}`);
+
+  const M4K = "#EXTM3U\n#EXT-X-VERSION:4\n#EXT-X-STREAM-INF:BANDWIDTH=16000000,RESOLUTION=3840x2160\nhttps://flystream.net/v/2160.m3u8\n" +
+    "#EXT-X-STREAM-INF:BANDWIDTH=5000000,RESOLUTION=1920x1080\nhttps://flystream.net/v/1080.m3u8\n" +
+    "#EXT-X-STREAM-INF:BANDWIDTH=2800000,RESOLUTION=1280x720\nhttps://flystream.net/v/720.m3u8\n";
+  const MWIDE = '#EXTM3U\n#EXT-X-INDEPENDENT-SEGMENTS\n#EXT-X-STREAM-INF:BANDWIDTH=810647,CODECS="mp4a.40.2,avc1.42c015",RESOLUTION=640x266,FRAME-RATE=24\nhttps://flystream.net/w/360.m3u8\n' +
+    '#EXT-X-STREAM-INF:BANDWIDTH=2540758,CODECS="mp4a.40.2,avc1.64001f",RESOLUTION=1280x534,FRAME-RATE=24\nhttps://flystream.net/w/720.m3u8\n' +
+    '#EXT-X-STREAM-INF:BANDWIDTH=4629855,CODECS="mp4a.40.2,avc1.640028",RESOLUTION=1920x800,FRAME-RATE=24\nhttps://flystream.net/w/1080.m3u8\n';
+  const MAUDIO = '#EXTM3U\n#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="a",NAME="en",URI="https://flystream.net/a/en.m3u8"\n' +
+    '#EXT-X-STREAM-INF:BANDWIDTH=5000000,RESOLUTION=1920x1080,AUDIO="a"\nhttps://flystream.net/a/1080.m3u8\n' +
+    '#EXT-X-STREAM-INF:BANDWIDTH=2000000,RESOLUTION=1280x720,AUDIO="a"\nhttps://flystream.net/a/720.m3u8\n';
+  global.__masters = {
+    "https://flystream.net/source-hls/k4/index.m3u8?dseg=1": M4K,
+    "https://flystream.net/source-hls/wd/index.m3u8?cv=t": MWIDE,
+    "https://flystream.net/source-hls/au/index.m3u8?cv=u": MAUDIO,
+  };
+  global.__masterHits = [];
+  global.__apiBody = { streams: [
+    { url: "/source-hls/k4/index.m3u8?dseg=1", quality: "2160p", videoCodec: "h264", name: "Film · 2160p", sourceBucket: "s1" },
+    { url: "/source-hls/wd/index.m3u8?cv=t", quality: "1080p", videoCodec: "h264", name: "Film · 1080p", sourceBucket: "s2" },
+    { url: "/source-hls/au/index.m3u8?cv=u", quality: "1080p", videoCodec: "h264", name: "Film · 1080p", sourceBucket: "s3" },
+  ] };
+  delete global.challengeBrowser;
+  const split = await getStreams(7070, "movie", 1, 1, { skipCompanion: true });
+  const rows = split.map((s) => `${s.name}|${s.quality}|${s.url.replace("https://flystream.net", "")}`);
+  assert.deepStrictEqual(rows, [
+    "FlyStream S1 - 4K|4K|/v/2160.m3u8",
+    "FlyStream S1 - 1080p|1080p|/v/1080.m3u8",
+    "FlyStream S2 - 1080p|1080p|/w/1080.m3u8",
+    "FlyStream S3 - 1080p|1080p|/source-hls/au/index.m3u8?cv=u",
+    "FlyStream S1 - 720p|720p|/v/720.m3u8",
+    "FlyStream S2 - 720p|720p|/w/720.m3u8",
+    "FlyStream S2 - 360p|360p|/w/360.m3u8",
+    "FlyStream S1 - Auto|Auto|/source-hls/k4/index.m3u8?dseg=1",
+    "FlyStream S2 - Auto|Auto|/source-hls/wd/index.m3u8?cv=t",
+  ], "variants split, widescreen labelled by width, separate-audio master kept whole, Auto rows last");
+  assert.strictEqual(split[0].title.split("\n")[1], "4K · 3840×2160 · H264");
+  assert.strictEqual(split[7].title.split("\n")[1], "Auto (up to 4K) · H264");
+  for (const s of split) {
+    assert.strictEqual(s.behaviorHints.proxyHeaders.request.Referer, "https://flystream.net/", "variants keep playback headers");
+    assert.strictEqual(s.headers, s.behaviorHints.proxyHeaders.request);
+  }
+  assert.strictEqual(global.__masterHits.length, 3, "one master fetch per source");
+  assert(global.__masterHits.every((h) => h.headers.Referer === "https://flystream.net/"), "masters fetched with playback headers");
+  console.log(`✓ HLS variants: ${split.length} rows from 3 sources (4K + widescreen split, separate-audio master kept, Auto last)`);
+
+  // Not enough of the 9 s budget left after the API call -> no split (one row per source).
+  global.__masterHits = [];
+  global.__apiClockJump = 7600;
+  const late = await getStreams(7071, "movie", 1, 1, { skipCompanion: true });
+  global.__restoreClock();
+  delete global.__apiClockJump;
+  assert.strictEqual(late.length, 3, "budget exhausted -> masters left whole");
+  assert.strictEqual(global.__masterHits.length, 0, "no master fetched without budget");
+  console.log("✓ HLS variants skipped when the lookup budget is spent");
+
+  // Companion results are already split by the server: the client does not fetch masters again.
+  global.__masterHits = [];
+  process.env.FLYSTREAM_COMPANION_URL = "http://pi.test:7070";
+  global.__companion = () => Promise.resolve(json({ ok: true, streams: [{ name: "FlyStream S1 - 4K", url: "https://flystream.net/source-hls/k4/index.m3u8?dseg=1", quality: "4K", title: "x" }] }));
+  const viaComp = await getStreams(7072, "movie");
+  assert.strictEqual(viaComp.length, 1);
+  assert.strictEqual(global.__masterHits.length, 0, "companion streams are not re-split on the client");
+  delete process.env.FLYSTREAM_COMPANION_URL;
+  delete global.__companion;
+  delete global.__masters;
+  delete global.__apiBody;
+  console.log("✓ companion results are not re-split on the TV");
 
   console.log("\n🎉 FlyStream offline tests passed\n");
   process.exit(0); // the stubbed hanging fetch never settles

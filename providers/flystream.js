@@ -205,9 +205,10 @@ var require_flystream_api_streams = __commonJS({
         const codec = str(s.videoCodec);
         const size = str(s.size);
         const name = str(s.name) || str(s.title) || fallbackTitle || "Stream";
+        const bucket = /^s\d{1,2}$/i.test(str(s.sourceBucket)) ? " " + str(s.sourceBucket).toUpperCase() : "";
         const details = [qualityLabel, codec ? codec.toUpperCase() : "", size].filter(Boolean).join(" \xB7 ");
         const stream = {
-          name: `FlyStream - ${qualityLabel}`,
+          name: `FlyStream${bucket} - ${qualityLabel}`,
           title: `FlyStream ${name}
 ${details || "Direct HLS Stream"}`,
           url,
@@ -396,6 +397,136 @@ var require_tmdb_title_metadata = __commonJS({
   }
 });
 
+// src/shared/hls-master-playlist-parser.js
+var require_hls_master_playlist_parser = __commonJS({
+  "src/shared/hls-master-playlist-parser.js"(exports2, module2) {
+    var STREAM_INF_RE = /#EXT-X-STREAM-INF:([^\r\n]*)\r?\n\s*([^\s#][^\r\n]*)/g;
+    var RESOLUTION_RE = /(?:^|,)RESOLUTION=(\d+)x(\d+)/;
+    var BANDWIDTH_RE = /(?:^|,)BANDWIDTH=(\d+)/;
+    function resolveAgainst(url, base) {
+      if (!url || url.startsWith("http"))
+        return url;
+      try {
+        return new URL(url, base).toString();
+      } catch (e) {
+        return url;
+      }
+    }
+    function parseMasterPlaylist(text, playlistUrl) {
+      const variants = [];
+      STREAM_INF_RE.lastIndex = 0;
+      let match;
+      while ((match = STREAM_INF_RE.exec(text)) !== null) {
+        const res = RESOLUTION_RE.exec(match[1]);
+        const bw = BANDWIDTH_RE.exec(match[1]);
+        variants.push({
+          url: resolveAgainst(match[2].trim(), playlistUrl),
+          width: res ? parseInt(res[1], 10) : null,
+          height: res ? parseInt(res[2], 10) : null,
+          bandwidth: bw ? parseInt(bw[1], 10) : null
+        });
+      }
+      return variants;
+    }
+    module2.exports = { parseMasterPlaylist, resolveAgainst };
+  }
+});
+
+// src/flystream/flystream-hls-variant-expansion.js
+var require_flystream_hls_variant_expansion = __commonJS({
+  "src/flystream/flystream-hls-variant-expansion.js"(exports2, module2) {
+    var { fetchWithTimeout } = require_provider_utils();
+    var { parseMasterPlaylist } = require_hls_master_playlist_parser();
+    var SEPARATE_AUDIO_RE = /#EXT-X-MEDIA:[^\r\n]*TYPE=AUDIO[^\r\n]*URI=/;
+    function qualityFromResolution(width, height) {
+      const byHeight = (h) => h >= 2e3 ? 2160 : h >= 1300 ? 1440 : h >= 1e3 ? 1080 : h >= 700 ? 720 : h >= 460 ? 480 : h ? 360 : 0;
+      const byWidth = (w) => w >= 3200 ? 2160 : w >= 2400 ? 1440 : w >= 1700 ? 1080 : w >= 1100 ? 720 : w >= 800 ? 480 : w ? 360 : 0;
+      const p = Math.max(byHeight(height || 0), byWidth(width || 0));
+      if (!p)
+        return null;
+      return p === 2160 ? "4K" : p + "p";
+    }
+    function namePrefix(name) {
+      const i = name.lastIndexOf(" - ");
+      return i > 0 ? name.slice(0, i) : name;
+    }
+    function titleFor(stream, label, extra) {
+      const lines = String(stream.title || "").split("\n");
+      const rest = (lines[1] || "").split(" \xB7 ").slice(1);
+      return [lines[0], [label].concat(extra || [], rest).filter(Boolean).join(" \xB7 ")].join("\n");
+    }
+    function expandStream(stream, timeoutMs) {
+      return __async(this, null, function* () {
+        if (!/\.m3u8(?:[?#]|$)/i.test(stream.url))
+          return [stream];
+        try {
+          const res = yield fetchWithTimeout(stream.url, { headers: stream.headers || {} }, timeoutMs, "FlyStream master");
+          if (!res || !res.ok)
+            return [stream];
+          const text = yield res.text();
+          if (SEPARATE_AUDIO_RE.test(text))
+            return [stream];
+          const variants = parseMasterPlaylist(text, stream.url).filter((v) => v.url && (v.width || v.height));
+          if (variants.length < 2)
+            return [stream];
+          const prefix = namePrefix(stream.name);
+          const rows = [];
+          let top = null;
+          for (const v of variants) {
+            const q = qualityFromResolution(v.width, v.height);
+            if (!q)
+              continue;
+            if (!top)
+              top = q;
+            rows.push(
+              Object.assign({}, stream, {
+                name: `${prefix} - ${q}`,
+                title: titleFor(stream, q, [v.width && v.height ? `${v.width}\xD7${v.height}` : ""]),
+                url: v.url,
+                quality: q
+              })
+            );
+          }
+          if (rows.length < 2)
+            return [stream];
+          const best = rows.reduce((a, b) => rank(b.quality) > rank(a.quality) ? b : a).quality;
+          rows.push(
+            Object.assign({}, stream, {
+              name: `${prefix} - Auto`,
+              title: titleFor(stream, `Auto (up to ${best})`),
+              quality: "Auto"
+            })
+          );
+          return rows;
+        } catch (_) {
+          return [stream];
+        }
+      });
+    }
+    function rank(q) {
+      return q === "4K" ? 2160 : parseInt(q, 10) || 0;
+    }
+    function expandHlsVariants2(streams, timeoutMs) {
+      return __async(this, null, function* () {
+        const parts = yield Promise.all(streams.map((s) => expandStream(s, timeoutMs)));
+        const out = [];
+        const seen = /* @__PURE__ */ new Set();
+        for (const part of parts) {
+          for (const s of part) {
+            const key = s.url + "|" + s.quality;
+            if (seen.has(key))
+              continue;
+            seen.add(key);
+            out.push(s);
+          }
+        }
+        return out;
+      });
+    }
+    module2.exports = { expandHlsVariants: expandHlsVariants2, qualityFromResolution };
+  }
+});
+
 // src/flystream/index.js
 var BROWSER_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
 var BASE_URL = "https://flystream.net";
@@ -408,6 +539,10 @@ var HEADERS = {
 var { sortByQuality, withTimeout, TtlCache } = require_provider_utils();
 var { fetchApiStreams } = require_flystream_api_streams();
 var { fetchTitleMetadata } = require_tmdb_title_metadata();
+var { expandHlsVariants } = require_flystream_hls_variant_expansion();
+var LOOKUP_BUDGET_MS = 8e3;
+var MIN_SPLIT_MS = 600;
+var MAX_SPLIT_MS = 2500;
 var MAX_CACHE_SIZE = 100;
 var CACHE_TTL_MS = 10 * 60 * 1e3;
 var EMPTY_TTL_MS = 5 * 60 * 1e3;
@@ -524,8 +659,19 @@ function getStreams(tmdbId, mediaType = "movie", season = 1, episode = 1, opts) 
     return work;
   });
 }
+function splitVariants(result, startedAt) {
+  return __async(this, null, function* () {
+    if (!result.ok || !result.streams.length || result.via === "companion")
+      return result.ok ? result.streams : [];
+    const left = startedAt ? LOOKUP_BUDGET_MS - (Date.now() - startedAt) : MAX_SPLIT_MS;
+    if (left < MIN_SPLIT_MS)
+      return result.streams;
+    return expandHlsVariants(result.streams, Math.min(MAX_SPLIT_MS, left));
+  });
+}
 function resolveStreams(tmdbId, normType, s, e, cacheKey, opts) {
   return __async(this, null, function* () {
+    const startedAt = Date.now();
     try {
       const given = opts && opts.meta;
       const meta = given && given.title ? given : yield fetchTitleMetadata(String(tmdbId), normType);
@@ -541,14 +687,15 @@ function resolveStreams(tmdbId, normType, s, e, cacheKey, opts) {
       if (!result.ok)
         console.warn(`[FlyStream] API call failed (${result.reason}) for ${cacheKey}`);
       if (result.late) {
-        result.late.then((late) => {
-          if (late && late.ok && late.streams.length) {
-            streamCache.set(cacheKey, sortByQuality(late.streams), CACHE_TTL_MS);
-            console.log(`[FlyStream] late result cached: ${late.streams.length} stream(s) for ${cacheKey}`);
+        result.late.then((late) => late && late.ok && late.streams.length ? splitVariants(late, 0) : null).then((lateStreams) => {
+          if (lateStreams && lateStreams.length) {
+            streamCache.set(cacheKey, sortByQuality(lateStreams), CACHE_TTL_MS);
+            console.log(`[FlyStream] late result cached: ${lateStreams.length} stream(s) for ${cacheKey}`);
           }
+        }).catch(() => {
         });
       }
-      const streams = result.ok ? sortByQuality(result.streams) : [];
+      const streams = sortByQuality(yield splitVariants(result, startedAt));
       const ttl = !result.ok ? FAILURE_TTL_MS : streams.length ? CACHE_TTL_MS : EMPTY_TTL_MS;
       streamCache.set(cacheKey, streams, ttl);
       console.log(`[FlyStream] ${streams.length} stream(s) for ${cacheKey}`);

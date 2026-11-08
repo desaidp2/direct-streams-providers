@@ -16,7 +16,7 @@ const UA =
 const MEDIA_UA = "okhttp/4.12.0";
 
 const { sortByQuality, fetchWithTimeout, TtlCache } = require("../shared/provider-utils");
-const { parseMasterPlaylist } = require("./hls-master-playlist-parser");
+const { parseMasterPlaylist } = require("../shared/hls-master-playlist-parser");
 
 const VIDLINK_API = "https://vidlink.pro/api/b";
 const ENC_API = "https://enc-dec.app/api/enc-vidlink";
@@ -175,7 +175,7 @@ function playbackHeaders(qualityData, streamData) {
   return h;
 }
 
-// Expands an HLS master playlist into one stream per variant (parser: hls-master-playlist-parser.js).
+// Expands an HLS master playlist into one stream per variant (parser: shared/hls-master-playlist-parser.js).
 async function expandPlaylist(playlistUrl, headers, subtitles, title) {
   try {
     const text = await fetchText(playlistUrl, headers);

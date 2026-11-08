@@ -115,11 +115,12 @@ var require_provider_utils = __commonJS({
   }
 });
 
-// src/7movies/hls-master-playlist-parser.js
+// src/shared/hls-master-playlist-parser.js
 var require_hls_master_playlist_parser = __commonJS({
-  "src/7movies/hls-master-playlist-parser.js"(exports2, module2) {
+  "src/shared/hls-master-playlist-parser.js"(exports2, module2) {
     var STREAM_INF_RE = /#EXT-X-STREAM-INF:([^\r\n]*)\r?\n\s*([^\s#][^\r\n]*)/g;
     var RESOLUTION_RE = /(?:^|,)RESOLUTION=(\d+)x(\d+)/;
+    var BANDWIDTH_RE = /(?:^|,)BANDWIDTH=(\d+)/;
     function resolveAgainst(url, base) {
       if (!url || url.startsWith("http"))
         return url;
@@ -135,9 +136,12 @@ var require_hls_master_playlist_parser = __commonJS({
       let match;
       while ((match = STREAM_INF_RE.exec(text)) !== null) {
         const res = RESOLUTION_RE.exec(match[1]);
+        const bw = BANDWIDTH_RE.exec(match[1]);
         variants.push({
           url: resolveAgainst(match[2].trim(), playlistUrl),
-          height: res ? parseInt(res[2], 10) : null
+          width: res ? parseInt(res[1], 10) : null,
+          height: res ? parseInt(res[2], 10) : null,
+          bandwidth: bw ? parseInt(bw[1], 10) : null
         });
       }
       return variants;

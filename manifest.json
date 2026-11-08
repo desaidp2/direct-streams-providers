@@ -1,12 +1,12 @@
 {
   "name": "Direct Streams Providers",
-  "version": "1.0.12",
+  "version": "1.0.13",
   "scrapers": [
     {
       "id": "7movies",
       "name": "7Movies",
       "description": "7movies.ac sources (VidLink upstream) - direct MP4/HLS with subtitles",
-      "version": "1.0.4",
+      "version": "1.0.5",
       "author": "Anh Pham",
       "supportedTypes": [
         "movie",
@@ -47,7 +47,7 @@
       "id": "flystream",
       "name": "FlyStream",
       "description": "flystream.net sources (JSON /api/streams) - direct HLS up to 4K HEVC",
-      "version": "1.0.5",
+      "version": "1.0.6",
       "author": "Anh Pham",
       "supportedTypes": [
         "movie",

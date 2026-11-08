@@ -111,10 +111,13 @@ function mapApiStreams(data, fallbackTitle, session) {
     const codec = str(s.videoCodec);
     const size = str(s.size);
     const name = str(s.name) || str(s.title) || fallbackTitle || "Stream";
+    // Several sources of the same quality (e.g. three "1080p" buckets) are told apart by the
+    // site's source bucket ("s1", "s2", ...), when it sends one.
+    const bucket = /^s\d{1,2}$/i.test(str(s.sourceBucket)) ? " " + str(s.sourceBucket).toUpperCase() : "";
     const details = [qualityLabel, codec ? codec.toUpperCase() : "", size].filter(Boolean).join(" · ");
 
     const stream = {
-      name: `FlyStream - ${qualityLabel}`,
+      name: `FlyStream${bucket} - ${qualityLabel}`,
       title: `FlyStream ${name}\n${details || "Direct HLS Stream"}`,
       url: url,
       quality: normalizeQuality(qualityLabel),

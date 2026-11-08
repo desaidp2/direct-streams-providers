@@ -25,6 +25,13 @@ const HEADERS = {
 const { sortByQuality, withTimeout, TtlCache } = require("../shared/provider-utils");
 const { fetchApiStreams } = require("./flystream-api-streams");
 const { fetchTitleMetadata } = require("./tmdb-title-metadata");
+const { expandHlsVariants } = require("./flystream-hls-variant-expansion");
+
+// Variant split budget: the whole lookup must stay under the router's 9 s per-provider deadline
+// (WuPlay / Stremio). Split only if this much is left after the API call, bounded per master.
+const LOOKUP_BUDGET_MS = 8000;
+const MIN_SPLIT_MS = 600;
+const MAX_SPLIT_MS = 2500;
 
 // Bounded LRU cache. Misses are cached too (shorter), so a client retrying the same title
 // does not send the site another request each time.
@@ -190,7 +197,16 @@ async function getStreams(tmdbId, mediaType = "movie", season = 1, episode = 1, 
   return work;
 }
 
+// Split masters into variant rows when time allows. Streams from a companion are already split.
+async function splitVariants(result, startedAt) {
+  if (!result.ok || !result.streams.length || result.via === "companion") return result.ok ? result.streams : [];
+  const left = startedAt ? LOOKUP_BUDGET_MS - (Date.now() - startedAt) : MAX_SPLIT_MS;
+  if (left < MIN_SPLIT_MS) return result.streams;
+  return expandHlsVariants(result.streams, Math.min(MAX_SPLIT_MS, left));
+}
+
 async function resolveStreams(tmdbId, normType, s, e, cacheKey, opts) {
+  const startedAt = Date.now();
   try {
     // The companion route passes the title/IMDb/year the TV already looked up: skip a second
     // TMDB round trip (0.3-2 s) on every uncached request.
@@ -209,15 +225,18 @@ async function resolveStreams(tmdbId, normType, s, e, cacheKey, opts) {
     // Late fill: a browser call that overran the budget still lands in the cache when it finishes,
     // so the client's retry is a hit instead of a second full lookup.
     if (result.late) {
-      result.late.then((late) => {
-        if (late && late.ok && late.streams.length) {
-          streamCache.set(cacheKey, sortByQuality(late.streams), CACHE_TTL_MS);
-          console.log(`[FlyStream] late result cached: ${late.streams.length} stream(s) for ${cacheKey}`);
-        }
-      });
+      result.late
+        .then((late) => (late && late.ok && late.streams.length ? splitVariants(late, 0) : null))
+        .then((lateStreams) => {
+          if (lateStreams && lateStreams.length) {
+            streamCache.set(cacheKey, sortByQuality(lateStreams), CACHE_TTL_MS);
+            console.log(`[FlyStream] late result cached: ${lateStreams.length} stream(s) for ${cacheKey}`);
+          }
+        })
+        .catch(() => {});
     }
 
-    const streams = result.ok ? sortByQuality(result.streams) : [];
+    const streams = sortByQuality(await splitVariants(result, startedAt));
     const ttl = !result.ok ? FAILURE_TTL_MS : streams.length ? CACHE_TTL_MS : EMPTY_TTL_MS;
     streamCache.set(cacheKey, streams, ttl);
     console.log(`[FlyStream] ${streams.length} stream(s) for ${cacheKey}`);
