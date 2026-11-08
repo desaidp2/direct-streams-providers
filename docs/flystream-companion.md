@@ -196,11 +196,12 @@ http://<YOUR_LAN_IP>:7070/manifest.json
 When running the `flystream` scraper in Nuvio TV:
 - If running on the same local network as your companion server, configure `FLYSTREAM_COMPANION_URL`:
   ```ini
-  FLYSTREAM_COMPANION_URL=http://<YOUR_LAN_IP>:7070
+  FLYSTREAM_COMPANION_URL=http://<companion-host>.local:7070
   ```
+  Prefer the `.local` hostname (Android TV resolves mDNS): a LAN IP breaks silently when DHCP hands out a new one (see §9).
 - Nuvio TV queries `/companion/flystream?tmdbId=...&type=...` over LAN, retrieves the stream URLs with the server's session cookies, and passes them to ExoPlayer for playback.
-- Install the Nuvio repo from the companion (`http://<YOUR_LAN_IP>:7070/manifest.json`), not from GitHub: the companion URL is injected into `/providers/flystream.js` when the server serves it, so a GitHub-installed copy has no companion configured and makes no companion request.
-- Several companions: comma-separate them; they are queried in parallel and the first with streams wins (6 s budget).
+- Install the Nuvio repo from the companion (`http://<companion-host>.local:7070/manifest.json`), not from GitHub: the companion URL is injected into `/providers/flystream.js` when the server serves it, so a GitHub-installed copy has no companion configured and makes no companion request.
+- Several companions: comma-separate them; the first with streams wins (8 s budget). On Node they are queried in parallel; Nuvio's plugin `fetch` is synchronous, so on the TV they are tried in list order: put the usual companion first.
 - The companion routes are **LAN-only** (403 for public clients) and send no CORS headers, because they return live session cookies. Stremio / WuPlay never call them; they use `/stream/...`, which is unchanged. Opt out with `COMPANION_ALLOW_PUBLIC=1`.
 
 ---
@@ -236,3 +237,43 @@ To monitor ExoPlayer on your Android TV device:
 ```bash
 adb logcat | grep -iE 'ExoPlayer|com.nuvio.tv|flystream'
 ```
+
+---
+
+## 8. Stream Rows and HLS Variants
+
+Each FlyStream source is an HLS master with several variants (the API's `resolutions`, e.g. 2160p / 1080p / 720p). The server splits it so players can pick a quality:
+
+- one row per variant (`FlyStream S1 - 4K`, `… - 1080p`, `… - 720p`) plus an **Auto** row on the master URL; same-quality sources are tagged with the site's `sourceBucket` (`S1`, `S2`, …);
+- widescreen encodes are classed by width (1920×800 → `1080p`);
+- masters with separate audio renditions are left whole (a lone variant would play without sound).
+
+FlyStream names its variant playlists like MPEG-TS files (`/source-hls/<id>/asset/<token>.ts`), which players mistake for progressive TS. Variant rows therefore point at a ~150-byte single-variant master served by this server:
+
+```text
+GET /hls/flystream/variant.m3u8?u=<variant url>&b=<bandwidth>&r=<WxH>
+#EXTM3U
+#EXT-X-VERSION:4
+#EXT-X-STREAM-INF:BANDWIDTH=<b>,RESOLUTION=<r>
+<variant url>
+```
+
+The player then loads the variant and its segments straight from flystream.net with the stream's headers; the server never fetches anything for this route, and it accepts only the exact FlyStream variant URL shape (anything else → 400). Splitting happens on the server only (Stremio/WuPlay `/stream` and the companion route), within the 8 s lookup budget.
+
+## 9. Stable Address
+
+Clients pin the companion address twice: the Nuvio repository URL and `FLYSTREAM_COMPANION_URL` (injected into the served provider). Use the mDNS hostname for both, or give the host a DHCP reservation on the router. On a systemd install, set the URL with a drop-in instead of editing `.env`:
+
+```ini
+# /etc/systemd/system/direct-streams-providers.service.d/companion-url.conf
+[Service]
+Environment=FLYSTREAM_COMPANION_URL=http://<companion-host>.local:7070
+```
+
+```bash
+sudo systemctl daemon-reload && sudo systemctl restart direct-streams-providers
+curl -s http://<companion-host>.local:7070/providers/flystream.js | grep BUILD_COMPANION_URL
+```
+
+WuPlay keeps its add-ons in the cloud profile (config.wuplay.app); update the add-on URL there when the address changes.
+
