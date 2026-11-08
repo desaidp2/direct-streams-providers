@@ -35,9 +35,15 @@ const server = http.createServer(async (req, res) => {
 
   const parsedUrl = url.parse(req.url, true);
   const pathname = parsedUrl.pathname || "/";
+  const query = parsedUrl.query || {};
+  const host = req.headers.host || `127.0.0.1:${PORT}`;
+  const proto = req.headers["x-forwarded-proto"] || "http";
+  const baseUrl = `${proto}://${host}`;
+
+  console.log(`[HTTP] ${req.method} ${pathname}`);
 
   try {
-    const response = await route(pathname);
+    const response = await route(pathname, query, baseUrl);
     res.writeHead(response.status, response.headers);
     if (req.method === "HEAD") {
       res.end();

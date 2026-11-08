@@ -23,7 +23,9 @@ export default {
     }
 
     const url = new URL(request.url);
-    const result = await route(url.pathname);
+    const query = Object.fromEntries(url.searchParams.entries());
+    const baseUrl = `${url.protocol}//${url.host}`;
+    const result = await route(url.pathname, query, baseUrl);
 
     return new Response(request.method === "HEAD" ? null : result.body, {
       status: result.status,

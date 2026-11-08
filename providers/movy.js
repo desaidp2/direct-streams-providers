@@ -1,6 +1,6 @@
 /**
  * movy - Built from src/movy/
- * Generated: 2026-11-07T23:30:04.887Z
+ * Generated: 2026-11-08T00:10:08.474Z
  */
 var __async = (__this, __arguments, generator) => {
   return new Promise((resolve, reject) => {
@@ -465,4 +465,4 @@ function getStreams(tmdbId, mediaType, season, episode) {
     }
   });
 }
-module.exports = { getStreams };
+module.exports = { getStreams, fetchSubtitles };
