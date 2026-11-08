@@ -14,12 +14,13 @@ const { resolveTmdbId } = require("./id-resolver");
 const { toIso6392 } = require("./languages");
 const { getStreams: get7MoviesStreams } = require("../7movies/index");
 const { getStreams: getMovyStreams, fetchSubtitles: fetchMovySubtitles } = require("../movy/index");
+const { getStreams: getFlyStreamStreams } = require("../flystream/index");
 
 const MANIFEST = {
   id: "community.directstreamsproviders",
-  version: "1.0.7",
+  version: "1.0.8",
   name: "Direct Streams Providers",
-  description: "Fast direct streams from 7Movies & Movy up to 4K with multilingual subtitles (No Debrid Needed)",
+  description: "Fast direct streams from 7Movies, Movy & FlyStream up to 4K with multilingual subtitles (No Debrid Needed)",
   resources: ["stream", "subtitles"],
   types: ["movie", "series"],
   idPrefixes: ["tt", "tmdb:"],
@@ -119,10 +120,11 @@ async function handleStreams(type, rawId, baseUrl) {
       return { streams: [] };
     }
 
-    // Query both providers in parallel
-    const [sevenMoviesResult, movyResult] = await Promise.allSettled([
+    // Query all providers in parallel
+    const [sevenMoviesResult, movyResult, flyStreamResult] = await Promise.allSettled([
       get7MoviesStreams(tmdbId, normType, season, episode),
       getMovyStreams(tmdbId, normType, season, episode),
+      getFlyStreamStreams(tmdbId, normType, season, episode),
     ]);
 
     const streams = [];
@@ -138,6 +140,13 @@ async function handleStreams(type, rawId, baseUrl) {
     if (sevenMoviesResult.status === "fulfilled" && Array.isArray(sevenMoviesResult.value)) {
       for (const s of sevenMoviesResult.value) {
         streams.push(toStremioStream(s, "7Movies", baseUrl));
+      }
+    }
+
+    // 3. FlyStream streams (mirrors and HLS)
+    if (flyStreamResult.status === "fulfilled" && Array.isArray(flyStreamResult.value)) {
+      for (const s of flyStreamResult.value) {
+        streams.push(toStremioStream(s, "FlyStream", baseUrl));
       }
     }
 

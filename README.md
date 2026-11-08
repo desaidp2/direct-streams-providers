@@ -36,7 +36,7 @@ Tested and verified live on **onn. 4K Plus Streaming (Android TV)** running Nuvi
 
 - **7Movies** — resolves 7movies.ac's VidLink upstream: direct MP4, 360p–1080p, with captions.
 - **Movy** — resolves movy.sx's stream API (api.wecollege.net). Custom seed handshake ("mvm1") decrypted using 100% pure ECMAScript byte codecs (QuickJS/Hermes safe). Direct HLS up to 2160p (4K) with subtitle tracks.
-- **FlyStream** — *(Declined — will not be built)* flystream.net's operator explicitly refuses automated access/scraping, so no provider was built for it.
+- **FlyStream** — resolves flystream.net sources using the SkyStream-compatible challenge DOM and hydration/iframe mirror extraction architecture. Supports host challenge-browser delegation (`challengeBrowser.execute`) and direct HTML DOM fallback.
 
 ## ✨ Features & Engineering Optimizations
 

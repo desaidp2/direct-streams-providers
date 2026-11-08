@@ -1,6 +1,6 @@
 {
   "name": "Direct Streams Providers",
-  "version": "1.0.7",
+  "version": "1.0.8",
   "scrapers": [
     {
       "id": "7movies",
@@ -39,6 +39,27 @@
         "m3u8"
       ],
       "logo": "https://www.google.com/s2/favicons?domain=movy.sx&sz=128",
+      "contentLanguage": [
+        "en"
+      ]
+    },
+    {
+      "id": "flystream",
+      "name": "FlyStream",
+      "description": "flystream.net sources - SkyStream-compatible challenge DOM and mirror scraper",
+      "version": "1.0.0",
+      "author": "Anh Pham",
+      "supportedTypes": [
+        "movie",
+        "tv"
+      ],
+      "filename": "providers/flystream.js",
+      "enabled": true,
+      "formats": [
+        "m3u8",
+        "mp4"
+      ],
+      "logo": "https://flystream.net/favicon.ico",
       "contentLanguage": [
         "en"
       ]
