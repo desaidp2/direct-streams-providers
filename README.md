@@ -6,7 +6,7 @@
 
 A high-performance, low-memory direct video streaming suite that provides fast, account-free streams for **Nuvio**, **WuPlay**, and **Stremio**.
 
-Currently includes **7movies.ac** and **movy.sx** (with **flystream.net** coming soon). All scrapers resolve direct MP4 and HLS streams (up to 4K / 2160p) complete with localized subtitle tracks and ExoPlayer native header forwarding.
+Currently includes **7movies.ac** and **movy.sx**. All scrapers resolve direct MP4 and HLS streams (up to 4K / 2160p) complete with localized subtitle tracks and ExoPlayer native header forwarding.
 
 ---
 
@@ -36,7 +36,7 @@ Tested and verified live on **onn. 4K Plus Streaming (Android TV)** running Nuvi
 
 - **7Movies** — resolves 7movies.ac's VidLink upstream: direct MP4, 360p–1080p, with captions.
 - **Movy** — resolves movy.sx's stream API (api.wecollege.net). Custom seed handshake ("mvm1") decrypted using 100% pure ECMAScript byte codecs (QuickJS/Hermes safe). Direct HLS up to 2160p (4K) with subtitle tracks.
-- **FlyStream** — *(Planned)* direct streaming provider.
+- **FlyStream** — *(Declined — will not be built)* flystream.net's operator explicitly refuses automated access/scraping, so no provider was built for it.
 
 ## ✨ Features & Engineering Optimizations
 
