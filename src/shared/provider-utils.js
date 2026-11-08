@@ -18,10 +18,28 @@ const QUALITY_ORDER = {
 
 // Labels outside the table (e.g. "240p") rank below Unknown.
 // The old `QUALITY_ORDER[q] || -2` turned Auto (0) into -2, sorting it under Unknown.
+// Non-standard heights inside the table's range ("900p" from Movy's Reno server) rank between
+// their neighbours by linear interpolation, so 900p sorts after 1080p and before 720p.
+const HEIGHT_STEPS = [
+  [360, 1],
+  [480, 2],
+  [720, 3],
+  [1080, 4],
+  [1440, 5],
+  [2160, 6],
+];
 function qualityRank(quality) {
-  return Object.prototype.hasOwnProperty.call(QUALITY_ORDER, quality)
-    ? QUALITY_ORDER[quality]
-    : -2;
+  if (Object.prototype.hasOwnProperty.call(QUALITY_ORDER, quality)) return QUALITY_ORDER[quality];
+  const m = /^(\d{3,4})p$/.exec(String(quality));
+  if (m) {
+    const h = parseInt(m[1], 10);
+    for (let i = 1; i < HEIGHT_STEPS.length; i++) {
+      const [h0, r0] = HEIGHT_STEPS[i - 1];
+      const [h1, r1] = HEIGHT_STEPS[i];
+      if (h > h0 && h < h1) return r0 + ((h - h0) / (h1 - h0)) * (r1 - r0);
+    }
+  }
+  return -2;
 }
 
 // In-place stable sort, highest quality first. O(S log S) time, O(1) extra space.

@@ -35,8 +35,25 @@ const STREAM_HEADERS = {
   Origin: SITE,
 };
 
-const PRIMARY_SERVERS = ["miami", "boise"];
-const SECONDARY_SERVERS = ["atlanta", "phoenix", "dallas"];
+// movy.sx's original-audio servers in the site's own order (player script, 2026-11-08). The site
+// also lists dubbed servers (munich, berlin: German; paris: French; delhi: Hindi; cancun: Spanish)
+// and anikoto (anime); those are deliberately not asked.
+const ORIGINAL_AUDIO_SERVERS = [
+  "miami", "boise", "nashville", "chicago", "vegas", "reno", "oakland",
+  "seattle", "phoenix", "atlanta", "portland", "austin", "dallas",
+];
+// Miami + Boise first (the site marks them "May have 4K"), then the rest in batches of 3, stopping
+// after the first batch that has sources. Worst case 13 requests, one attempt each (site: retry 0).
+const FALLBACK_BATCH = 3;
+const SERVER_BATCHES = [ORIGINAL_AUDIO_SERVERS.slice(0, 2)];
+for (let i = 2; i < ORIGINAL_AUDIO_SERVERS.length; i += FALLBACK_BATCH) {
+  SERVER_BATCHES.push(ORIGINAL_AUDIO_SERVERS.slice(i, i + FALLBACK_BATCH));
+}
+// Whole-lookup budget, under the router's 9 s per-provider deadline.
+const LOOKUP_BUDGET_MS = 8000;
+const REQUEST_TIMEOUT_MS = 3500;
+const MIN_BATCH_MS = 300;
+const DETAIL_WAIT_MS = 1500;
 
 const { decryptSources } = require("./mvm1-byte-codecs");
 const { sortByQuality, withTimeout, TtlCache } = require("../shared/provider-utils");
@@ -74,50 +91,75 @@ function isTimeout(result) {
   return result.status === "rejected" && /timeout/i.test(String((result.reason && result.reason.message) || ""));
 }
 
-async function getSeed(mediaId) {
-  const hit = seedCache.get(mediaId);
-  if (hit) return hit;
-  const res = await timeout(
-    fetch(API + "/seed?mediaId=" + encodeURIComponent(mediaId), {
-      headers: API_HEADERS,
-    }),
-    3500
-  );
-  if (!res.ok) throw new Error("seed HTTP " + res.status);
-  const data = await res.json();
-  // Refresh 5 s before the server-side expiry, as before.
-  seedCache.set(mediaId, data.seed, Math.max(1000, (data.ttlMs || 30000) - 5000));
-  return data.seed;
+function httpError(what, status) {
+  const err = new Error(what + " HTTP " + status);
+  err.status = status;
+  return err;
 }
 
-async function fetchServerSources(server, params, mediaId) {
-  const attempt = async () => {
-    const seed = await getSeed(mediaId);
-    const queryParams = Object.assign({}, params, {
-      enc: "2",
-      seed: seed,
-    });
-    const url = API + "/" + server + "/sources?" + buildQuery(queryParams);
-    const res = await timeout(
-      fetch(url, {
-        headers: API_HEADERS,
-      }),
-      3500
-    );
-    if (!res.ok) throw new Error("sources HTTP " + res.status);
-    const text = await res.text();
-    const decrypted = decryptSources(text, seed, mediaId);
-    return JSON.parse(decrypted);
+// One seed per title, shared by every server request. Concurrent callers share one in-flight
+// fetch, so a batch of servers costs a single /seed request.
+const seedInflight = new Map();
+function getSeed(mediaId, timeoutMs) {
+  const hit = seedCache.get(mediaId);
+  if (hit) return Promise.resolve(hit);
+  let pending = seedInflight.get(mediaId);
+  if (!pending) {
+    pending = (async () => {
+      const res = await timeout(
+        fetch(API + "/seed?mediaId=" + encodeURIComponent(mediaId), { headers: API_HEADERS }),
+        timeoutMs || REQUEST_TIMEOUT_MS
+      );
+      if (!res.ok) throw httpError("seed", res.status);
+      const data = await res.json();
+      // Refresh 5 s before the server-side expiry, as before.
+      seedCache.set(mediaId, data.seed, Math.max(1000, (data.ttlMs || 30000) - 5000));
+      return data.seed;
+    })().finally(() => seedInflight.delete(mediaId));
+    seedInflight.set(mediaId, pending);
+  }
+  return pending;
+}
+
+// After a 401: drop the seed only if it is still the stale one, so concurrent 401s from one batch
+// trigger a single re-seed (the rest pick up the new seed or join the in-flight fetch).
+function reseed(mediaId, staleSeed, timeoutMs) {
+  if (seedCache.get(mediaId) === staleSeed) seedCache.delete(mediaId);
+  return getSeed(mediaId, timeoutMs);
+}
+
+// One attempt per server, like the site (retry 0); a 401 gets one retry with a fresh seed.
+async function fetchServerSources(server, params, mediaId, timeoutMs) {
+  const attempt = async (seed) => {
+    const url = API + "/" + server + "/sources?" + buildQuery(Object.assign({}, params, { enc: "2", seed: seed }));
+    const res = await timeout(fetch(url, { headers: API_HEADERS }), timeoutMs);
+    if (!res.ok) throw httpError("sources", res.status);
+    return JSON.parse(decryptSources(await res.text(), seed, mediaId));
   };
+  const seed = await getSeed(mediaId, timeoutMs);
   try {
-    return await attempt();
+    return await attempt(seed);
   } catch (e) {
-    if (String(e.message || "").includes("401")) {
-      seedCache.delete(mediaId);
-      return await attempt();
-    }
+    if (e && e.status === 401) return attempt(await reseed(mediaId, seed, timeoutMs));
     throw e;
   }
+}
+
+// The request fields movy.sx sends to every server (player script): title (already
+// encodeURIComponent-ed, so it is double-encoded on the wire), mediaType, year, totalSeasons,
+// episodeId, seasonId, tmdbId, imdbId. For a movie the site sends season/episode 1 and 0 seasons.
+function siteParams(type, tmdbId, detail, season, episode) {
+  const isTv = type === "tv";
+  return {
+    title: detail.title,
+    mediaType: type,
+    year: detail.year,
+    totalSeasons: isTv ? detail.totalSeasons : 0,
+    episodeId: isTv ? episode : 1,
+    seasonId: isTv ? season : 1,
+    tmdbId: Number(tmdbId),
+    imdbId: detail.imdbId,
+  };
 }
 
 async function fetchDetailParams(tmdbId, mediaType) {
@@ -181,17 +223,14 @@ async function fetchSubtitles(tmdbId, mediaType, season, episode) {
   }
 }
 
+// Standard heights keep their label; anything else keeps its own number (Reno serves "900p",
+// which used to be rounded down to 720p). The shared ranker places such labels between neighbours.
 function qualityLabel(raw) {
   const s = String(raw || "");
   const m = s.match(/(\d{3,4})/);
   if (m) {
     const n = parseInt(m[1], 10);
     if (n >= 2160) return "4K";
-    if (n >= 1440) return "1440p";
-    if (n >= 1080) return "1080p";
-    if (n >= 720) return "720p";
-    if (n >= 480) return "480p";
-    if (n >= 360) return "360p";
     return n + "p";
   }
   if (/4k|uhd/i.test(s)) return "4K";
@@ -202,11 +241,16 @@ function serverTitle(server) {
   return server.charAt(0).toUpperCase() + server.slice(1);
 }
 
-async function getStreams(tmdbId, mediaType, season, episode) {
+async function getStreams(tmdbId, mediaType, season, episode, opts) {
   try {
     if (!tmdbId) return [];
     const cleanId = String(tmdbId).trim();
     if (!cleanId) return [];
+
+    const budgetMs = (opts && opts.budgetMs) || LOOKUP_BUDGET_MS;
+    const requestTimeoutMs = (opts && opts.requestTimeoutMs) || REQUEST_TIMEOUT_MS;
+    const startedAt = Date.now();
+    const left = () => budgetMs - (Date.now() - startedAt);
 
     const type = mediaType === "tv" ? "tv" : "movie";
     const s = type === "tv" ? Math.max(1, parseInt(season, 10) || 1) : null;
@@ -217,34 +261,20 @@ async function getStreams(tmdbId, mediaType, season, episode) {
     const cached = streamCache.get(cacheKey);
     if (cached) return cached;
 
-    // 1. Kick off seed, subtitle search, and detail page in parallel
-    const seedPromise = getSeed(cleanId);
+    // 1. Seed and detail page in parallel. No seed (e.g. 429 rate limit) -> ask no server at all.
     const detailPromise = fetchDetailParams(cleanId, type);
-
-    // 2. Query primary servers (Miami & Boise) as soon as seed is ready
-    let seed;
     try {
-      seed = await timeout(seedPromise, 3500);
+      await getSeed(cleanId, Math.min(requestTimeoutMs, left()));
     } catch (e) {
+      streamCache.set(cacheKey, [], UNCERTAIN_EMPTY_TTL_MS);
       return [];
     }
-    if (!seed) return [];
-
-    const baseParams = {
-      mediaType: type,
-      tmdbId: Number(cleanId),
-      seasonId: type === "tv" ? s : undefined,
-      episodeId: type === "tv" ? ep : undefined,
-    };
-
-    const primaryResults = await Promise.allSettled(
-      PRIMARY_SERVERS.map((srv) => fetchServerSources(srv, baseParams, cleanId))
-    );
+    const detail = (await timeout(detailPromise, Math.max(1, Math.min(DETAIL_WAIT_MS, left()))).catch(() => ({}))) || {};
+    const params = siteParams(type, cleanId, detail, s, ep);
 
     const streams = [];
     const seenUrls = new Set();
     let payloadSubs = [];
-
     function collectSources(data, server) {
       if (!data) return;
       if (Array.isArray(data.subtitles) && data.subtitles.length && !payloadSubs.length) {
@@ -311,38 +341,29 @@ async function getStreams(tmdbId, mediaType, season, episode) {
       }
     }
 
-    let sawTimeout = primaryResults.some(isTimeout);
-    for (let i = 0; i < PRIMARY_SERVERS.length; i++) {
-      const res = primaryResults[i];
-      if (res.status === "fulfilled" && res.value) {
-        collectSources(res.value, PRIMARY_SERVERS[i]);
+    // 2. Walk the site's servers: Miami + Boise, then batches of 3, until a batch has sources,
+    //    the budget runs out, or the API rate-limits us (429 -> stop, do not walk further).
+    let sawTimeout = false;
+    let rateLimited = false;
+    for (const batch of SERVER_BATCHES) {
+      const remaining = left();
+      if (remaining < MIN_BATCH_MS) {
+        sawTimeout = true;
+        break;
       }
-    }
-
-    // 3. Fallback to secondary servers if primary returned nothing
-    if (!streams.length) {
-      const detail = (await timeout(detailPromise, 2500).catch(() => ({}))) || {};
-      const detailParams = Object.assign({}, baseParams, {
-        title: detail.title,
-        year: detail.year,
-        imdbId: detail.imdbId,
-        totalSeasons: detail.totalSeasons,
-      });
-
-      const secondaryResults = await Promise.allSettled(
-        SECONDARY_SERVERS.map((srv) => fetchServerSources(srv, detailParams, cleanId))
-      );
-      sawTimeout = sawTimeout || secondaryResults.some(isTimeout);
-      for (let i = 0; i < SECONDARY_SERVERS.length; i++) {
-        const res = secondaryResults[i];
-        if (res.status === "fulfilled" && res.value) {
-          collectSources(res.value, SECONDARY_SERVERS[i]);
-        }
+      const perRequest = Math.min(requestTimeoutMs, remaining);
+      const results = await Promise.allSettled(batch.map((srv) => fetchServerSources(srv, params, cleanId, perRequest)));
+      for (let i = 0; i < batch.length; i++) {
+        const res = results[i];
+        if (res.status === "fulfilled" && res.value) collectSources(res.value, batch[i]);
+        else if (res.reason && res.reason.status === 429) rateLimited = true;
       }
+      if (results.some(isTimeout)) sawTimeout = true;
+      if (streams.length || rateLimited) break;
     }
 
     if (!streams.length) {
-      streamCache.set(cacheKey, [], sawTimeout ? UNCERTAIN_EMPTY_TTL_MS : EMPTY_TTL_MS);
+      streamCache.set(cacheKey, [], sawTimeout || rateLimited ? UNCERTAIN_EMPTY_TTL_MS : EMPTY_TTL_MS);
       return [];
     }
 

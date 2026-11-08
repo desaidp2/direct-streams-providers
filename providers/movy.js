@@ -183,8 +183,28 @@ var require_provider_utils = __commonJS({
       Auto: 0,
       Unknown: -1
     };
+    var HEIGHT_STEPS = [
+      [360, 1],
+      [480, 2],
+      [720, 3],
+      [1080, 4],
+      [1440, 5],
+      [2160, 6]
+    ];
     function qualityRank(quality) {
-      return Object.prototype.hasOwnProperty.call(QUALITY_ORDER, quality) ? QUALITY_ORDER[quality] : -2;
+      if (Object.prototype.hasOwnProperty.call(QUALITY_ORDER, quality))
+        return QUALITY_ORDER[quality];
+      const m = /^(\d{3,4})p$/.exec(String(quality));
+      if (m) {
+        const h = parseInt(m[1], 10);
+        for (let i = 1; i < HEIGHT_STEPS.length; i++) {
+          const [h0, r0] = HEIGHT_STEPS[i - 1];
+          const [h1, r1] = HEIGHT_STEPS[i];
+          if (h > h0 && h < h1)
+            return r0 + (h - h0) / (h1 - h0) * (r1 - r0);
+        }
+      }
+      return -2;
     }
     function sortByQuality2(streams) {
       return streams.sort((a, b) => qualityRank(b.quality) - qualityRank(a.quality));
@@ -275,8 +295,30 @@ var STREAM_HEADERS = {
   Referer: SITE + "/",
   Origin: SITE
 };
-var PRIMARY_SERVERS = ["miami", "boise"];
-var SECONDARY_SERVERS = ["atlanta", "phoenix", "dallas"];
+var ORIGINAL_AUDIO_SERVERS = [
+  "miami",
+  "boise",
+  "nashville",
+  "chicago",
+  "vegas",
+  "reno",
+  "oakland",
+  "seattle",
+  "phoenix",
+  "atlanta",
+  "portland",
+  "austin",
+  "dallas"
+];
+var FALLBACK_BATCH = 3;
+var SERVER_BATCHES = [ORIGINAL_AUDIO_SERVERS.slice(0, 2)];
+for (let i = 2; i < ORIGINAL_AUDIO_SERVERS.length; i += FALLBACK_BATCH) {
+  SERVER_BATCHES.push(ORIGINAL_AUDIO_SERVERS.slice(i, i + FALLBACK_BATCH));
+}
+var LOOKUP_BUDGET_MS = 8e3;
+var REQUEST_TIMEOUT_MS = 3500;
+var MIN_BATCH_MS = 300;
+var DETAIL_WAIT_MS = 1500;
 var { decryptSources } = require_mvm1_byte_codecs();
 var { sortByQuality, withTimeout, TtlCache } = require_provider_utils();
 function timeout(promise, ms = 3500) {
@@ -301,55 +343,69 @@ var streamCache = new TtlCache(MAX_CACHE_SIZE, STREAM_TTL_MS);
 function isTimeout(result) {
   return result.status === "rejected" && /timeout/i.test(String(result.reason && result.reason.message || ""));
 }
-function getSeed(mediaId) {
-  return __async(this, null, function* () {
-    const hit = seedCache.get(mediaId);
-    if (hit)
-      return hit;
-    const res = yield timeout(
-      fetch(API + "/seed?mediaId=" + encodeURIComponent(mediaId), {
-        headers: API_HEADERS
-      }),
-      3500
-    );
-    if (!res.ok)
-      throw new Error("seed HTTP " + res.status);
-    const data = yield res.json();
-    seedCache.set(mediaId, data.seed, Math.max(1e3, (data.ttlMs || 3e4) - 5e3));
-    return data.seed;
-  });
+function httpError(what, status) {
+  const err = new Error(what + " HTTP " + status);
+  err.status = status;
+  return err;
 }
-function fetchServerSources(server, params, mediaId) {
-  return __async(this, null, function* () {
-    const attempt = () => __async(this, null, function* () {
-      const seed = yield getSeed(mediaId);
-      const queryParams = Object.assign({}, params, {
-        enc: "2",
-        seed
-      });
-      const url = API + "/" + server + "/sources?" + buildQuery(queryParams);
+var seedInflight = /* @__PURE__ */ new Map();
+function getSeed(mediaId, timeoutMs) {
+  const hit = seedCache.get(mediaId);
+  if (hit)
+    return Promise.resolve(hit);
+  let pending = seedInflight.get(mediaId);
+  if (!pending) {
+    pending = (() => __async(this, null, function* () {
       const res = yield timeout(
-        fetch(url, {
-          headers: API_HEADERS
-        }),
-        3500
+        fetch(API + "/seed?mediaId=" + encodeURIComponent(mediaId), { headers: API_HEADERS }),
+        timeoutMs || REQUEST_TIMEOUT_MS
       );
       if (!res.ok)
-        throw new Error("sources HTTP " + res.status);
-      const text = yield res.text();
-      const decrypted = decryptSources(text, seed, mediaId);
-      return JSON.parse(decrypted);
+        throw httpError("seed", res.status);
+      const data = yield res.json();
+      seedCache.set(mediaId, data.seed, Math.max(1e3, (data.ttlMs || 3e4) - 5e3));
+      return data.seed;
+    }))().finally(() => seedInflight.delete(mediaId));
+    seedInflight.set(mediaId, pending);
+  }
+  return pending;
+}
+function reseed(mediaId, staleSeed, timeoutMs) {
+  if (seedCache.get(mediaId) === staleSeed)
+    seedCache.delete(mediaId);
+  return getSeed(mediaId, timeoutMs);
+}
+function fetchServerSources(server, params, mediaId, timeoutMs) {
+  return __async(this, null, function* () {
+    const attempt = (seed2) => __async(this, null, function* () {
+      const url = API + "/" + server + "/sources?" + buildQuery(Object.assign({}, params, { enc: "2", seed: seed2 }));
+      const res = yield timeout(fetch(url, { headers: API_HEADERS }), timeoutMs);
+      if (!res.ok)
+        throw httpError("sources", res.status);
+      return JSON.parse(decryptSources(yield res.text(), seed2, mediaId));
     });
+    const seed = yield getSeed(mediaId, timeoutMs);
     try {
-      return yield attempt();
+      return yield attempt(seed);
     } catch (e) {
-      if (String(e.message || "").includes("401")) {
-        seedCache.delete(mediaId);
-        return yield attempt();
-      }
+      if (e && e.status === 401)
+        return attempt(yield reseed(mediaId, seed, timeoutMs));
       throw e;
     }
   });
+}
+function siteParams(type, tmdbId, detail, season, episode) {
+  const isTv = type === "tv";
+  return {
+    title: detail.title,
+    mediaType: type,
+    year: detail.year,
+    totalSeasons: isTv ? detail.totalSeasons : 0,
+    episodeId: isTv ? episode : 1,
+    seasonId: isTv ? season : 1,
+    tmdbId: Number(tmdbId),
+    imdbId: detail.imdbId
+  };
 }
 function fetchDetailParams(tmdbId, mediaType) {
   return __async(this, null, function* () {
@@ -426,16 +482,6 @@ function qualityLabel(raw) {
     const n = parseInt(m[1], 10);
     if (n >= 2160)
       return "4K";
-    if (n >= 1440)
-      return "1440p";
-    if (n >= 1080)
-      return "1080p";
-    if (n >= 720)
-      return "720p";
-    if (n >= 480)
-      return "480p";
-    if (n >= 360)
-      return "360p";
     return n + "p";
   }
   if (/4k|uhd/i.test(s))
@@ -445,7 +491,7 @@ function qualityLabel(raw) {
 function serverTitle(server) {
   return server.charAt(0).toUpperCase() + server.slice(1);
 }
-function getStreams(tmdbId, mediaType, season, episode) {
+function getStreams(tmdbId, mediaType, season, episode, opts) {
   return __async(this, null, function* () {
     try {
       let collectSources2 = function(data, server) {
@@ -505,6 +551,10 @@ function getStreams(tmdbId, mediaType, season, episode) {
       const cleanId = String(tmdbId).trim();
       if (!cleanId)
         return [];
+      const budgetMs = opts && opts.budgetMs || LOOKUP_BUDGET_MS;
+      const requestTimeoutMs = opts && opts.requestTimeoutMs || REQUEST_TIMEOUT_MS;
+      const startedAt = Date.now();
+      const left = () => budgetMs - (Date.now() - startedAt);
       const type = mediaType === "tv" ? "tv" : "movie";
       const s = type === "tv" ? Math.max(1, parseInt(season, 10) || 1) : null;
       const ep = type === "tv" ? Math.max(1, parseInt(episode, 10) || 1) : null;
@@ -512,56 +562,42 @@ function getStreams(tmdbId, mediaType, season, episode) {
       const cached = streamCache.get(cacheKey);
       if (cached)
         return cached;
-      const seedPromise = getSeed(cleanId);
       const detailPromise = fetchDetailParams(cleanId, type);
-      let seed;
       try {
-        seed = yield timeout(seedPromise, 3500);
+        yield getSeed(cleanId, Math.min(requestTimeoutMs, left()));
       } catch (e) {
+        streamCache.set(cacheKey, [], UNCERTAIN_EMPTY_TTL_MS);
         return [];
       }
-      if (!seed)
-        return [];
-      const baseParams = {
-        mediaType: type,
-        tmdbId: Number(cleanId),
-        seasonId: type === "tv" ? s : void 0,
-        episodeId: type === "tv" ? ep : void 0
-      };
-      const primaryResults = yield Promise.allSettled(
-        PRIMARY_SERVERS.map((srv) => fetchServerSources(srv, baseParams, cleanId))
-      );
+      const detail = (yield timeout(detailPromise, Math.max(1, Math.min(DETAIL_WAIT_MS, left()))).catch(() => ({}))) || {};
+      const params = siteParams(type, cleanId, detail, s, ep);
       const streams = [];
       const seenUrls = /* @__PURE__ */ new Set();
       let payloadSubs = [];
-      let sawTimeout = primaryResults.some(isTimeout);
-      for (let i = 0; i < PRIMARY_SERVERS.length; i++) {
-        const res = primaryResults[i];
-        if (res.status === "fulfilled" && res.value) {
-          collectSources2(res.value, PRIMARY_SERVERS[i]);
+      let sawTimeout = false;
+      let rateLimited = false;
+      for (const batch of SERVER_BATCHES) {
+        const remaining = left();
+        if (remaining < MIN_BATCH_MS) {
+          sawTimeout = true;
+          break;
         }
+        const perRequest = Math.min(requestTimeoutMs, remaining);
+        const results = yield Promise.allSettled(batch.map((srv) => fetchServerSources(srv, params, cleanId, perRequest)));
+        for (let i = 0; i < batch.length; i++) {
+          const res = results[i];
+          if (res.status === "fulfilled" && res.value)
+            collectSources2(res.value, batch[i]);
+          else if (res.reason && res.reason.status === 429)
+            rateLimited = true;
+        }
+        if (results.some(isTimeout))
+          sawTimeout = true;
+        if (streams.length || rateLimited)
+          break;
       }
       if (!streams.length) {
-        const detail = (yield timeout(detailPromise, 2500).catch(() => ({}))) || {};
-        const detailParams = Object.assign({}, baseParams, {
-          title: detail.title,
-          year: detail.year,
-          imdbId: detail.imdbId,
-          totalSeasons: detail.totalSeasons
-        });
-        const secondaryResults = yield Promise.allSettled(
-          SECONDARY_SERVERS.map((srv) => fetchServerSources(srv, detailParams, cleanId))
-        );
-        sawTimeout = sawTimeout || secondaryResults.some(isTimeout);
-        for (let i = 0; i < SECONDARY_SERVERS.length; i++) {
-          const res = secondaryResults[i];
-          if (res.status === "fulfilled" && res.value) {
-            collectSources2(res.value, SECONDARY_SERVERS[i]);
-          }
-        }
-      }
-      if (!streams.length) {
-        streamCache.set(cacheKey, [], sawTimeout ? UNCERTAIN_EMPTY_TTL_MS : EMPTY_TTL_MS);
+        streamCache.set(cacheKey, [], sawTimeout || rateLimited ? UNCERTAIN_EMPTY_TTL_MS : EMPTY_TTL_MS);
         return [];
       }
       let subs = payloadSubs;

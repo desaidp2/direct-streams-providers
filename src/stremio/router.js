@@ -80,7 +80,7 @@ function injectCompanionUrl(code, url) {
 
 const MANIFEST = {
   id: "community.directstreamsproviders",
-  version: "1.0.13",
+  version: "1.0.14",
   name: "Direct Streams Providers",
   description: "Fast direct streams from 7Movies, Movy & FlyStream up to 4K with multilingual subtitles (No Debrid Needed)",
   resources: ["stream", "subtitles"],
