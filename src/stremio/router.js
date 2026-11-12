@@ -16,6 +16,8 @@ const { resolveTmdbId } = require("./id-resolver");
 const { toIso6392 } = require("./languages");
 const { getStreams: getCinejoyStreams } = require("../cinejoy/index");
 const { getStreams: get7MoviesStreams } = require("../7movies/index");
+const { getStreams: getMovyStreams } = require("../movy/index");
+const { getStreams: getFlyStreamStreams } = require("../flystream/index");
 const { CORS_HEADERS } = require("./http-constants");
 const { handleSubtitleProxy } = require("./subtitle-proxy");
 const { companionAllowed } = require("./client-address-private-network-check");
@@ -81,7 +83,7 @@ const MANIFEST = {
   id: "community.directstreamsproviders",
   version: "1.0.14",
   name: "Cinejoy + 7Movies Direct Streams",
-  description: "Direct HTTP streams from Cinejoy and 7Movies only. No P2P or torrents.",
+  description: "Direct HTTP streams from Cinejoy, 7Movies, Movy and FlyStream. No P2P or torrents.",
   resources: ["stream", "subtitles"],
   types: ["movie", "series"],
   idPrefixes: ["tt", "tmdb:"],
@@ -92,10 +94,13 @@ const MANIFEST = {
   },
 };
 
-// Only the two requested direct HTTP providers are queried.
+// All four direct HTTP providers already implemented in this repository.
+// Each runs in parallel with a bounded deadline; unavailable upstreams return no streams.
 const PROVIDERS = [
   { tag: "Cinejoy", getStreams: getCinejoyStreams, deadlineMs: 20000 },
   { tag: "7Movies", getStreams: get7MoviesStreams, deadlineMs: 18000 },
+  { tag: "Movy", getStreams: getMovyStreams, deadlineMs: 9000 },
+  { tag: "FlyStream", getStreams: getFlyStreamStreams, deadlineMs: 8000 },
 ];
 
 // Each provider gets this long; a late provider is dropped from the response instead of
@@ -265,7 +270,7 @@ async function handleSubtitles(type, rawId, baseUrl) {
 
     let rawSubs = [];
     try {
-      rawSubs = []; // Cinejoy-only addon: no Movy subtitle provider.
+      rawSubs = await require("../movy/index").fetchSubtitles(tmdbId, normType, season, episode);
     } catch (e) {
       rawSubs = [];
     }
