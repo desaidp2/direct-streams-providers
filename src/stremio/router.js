@@ -15,6 +15,7 @@ const pathModule = require("path");
 const { resolveTmdbId } = require("./id-resolver");
 const { toIso6392 } = require("./languages");
 const { getStreams: getCinejoyStreams } = require("../cinejoy/index");
+const { getStreams: get7MoviesStreams } = require("../7movies/index");
 const { CORS_HEADERS } = require("./http-constants");
 const { handleSubtitleProxy } = require("./subtitle-proxy");
 const { companionAllowed } = require("./client-address-private-network-check");
@@ -79,8 +80,8 @@ function injectCompanionUrl(code, url) {
 const MANIFEST = {
   id: "community.directstreamsproviders",
   version: "1.0.14",
-  name: "Cinejoy Direct Streams",
-  description: "Direct HTTP streams from Cinejoy only. No P2P or torrents.",
+  name: "Cinejoy + 7Movies Direct Streams",
+  description: "Direct HTTP streams from Cinejoy and 7Movies only. No P2P or torrents.",
   resources: ["stream", "subtitles"],
   types: ["movie", "series"],
   idPrefixes: ["tt", "tmdb:"],
@@ -91,9 +92,10 @@ const MANIFEST = {
   },
 };
 
-// Cinejoy-only: no fallback providers are queried.
+// Only the two requested direct HTTP providers are queried.
 const PROVIDERS = [
   { tag: "Cinejoy", getStreams: getCinejoyStreams, deadlineMs: 20000 },
+  { tag: "7Movies", getStreams: get7MoviesStreams, deadlineMs: 18000 },
 ];
 
 // Each provider gets this long; a late provider is dropped from the response instead of
@@ -221,14 +223,16 @@ async function resolveStreams(type, rawId, baseUrl) {
       return { streams: [] };
     }
 
-    // Query Cinejoy only; each provider is bounded by its deadline
+    // Query Cinejoy and 7Movies in parallel; each provider is bounded by its deadline
     const results = await Promise.all(
       PROVIDERS.map((p) =>
         withDeadline(p.getStreams(tmdbId, normType, season, episode), p.deadlineMs || PROVIDER_DEADLINE_MS, p.tag)
       )
     );
 
-    console.info(`[StremioRouter] Cinejoy returned ${Array.isArray(results[0]) ? results[0].length : 0} stream(s) for ${normType}:${tmdbId}:${season || ""}:${episode || ""}`);
+    for (let i = 0; i < PROVIDERS.length; i++) {
+      console.info(`[StremioRouter] ${PROVIDERS[i].tag} returned ${Array.isArray(results[i]) ? results[i].length : 0} stream(s) for ${normType}:${tmdbId}:${season || ""}:${episode || ""}`);
+    }
     const streams = [];
     const subMemo = new Map();
     for (let i = 0; i < PROVIDERS.length; i++) {
