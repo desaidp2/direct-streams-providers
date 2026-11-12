@@ -69,6 +69,7 @@ async function getStreams(tmdbId, type, season, episode) {
 
   try {
     const resolved = await runResolver(target);
+    console.info(`[Cinejoy] Resolved ${target.type}:${id} to HLS host ${new URL(resolved.url).host}`);
     const headers = {
       "User-Agent": UA,
       Referer: "https://cinejoy.to/",
@@ -84,7 +85,7 @@ async function getStreams(tmdbId, type, season, episode) {
       subtitles: [],
     }];
   } catch (err) {
-    console.warn("[Cinejoy] " + (err && err.message ? err.message : err));
+    console.warn(`[Cinejoy] No stream for ${target.type}:${id}: ` + (err && err.message ? err.message : err));
     return [];
   }
 }
