@@ -14,9 +14,6 @@ const fs = require("fs");
 const pathModule = require("path");
 const { resolveTmdbId } = require("./id-resolver");
 const { toIso6392 } = require("./languages");
-const { getStreams: get7MoviesStreams } = require("../7movies/index");
-const { getStreams: getMovyStreams, fetchSubtitles: fetchMovySubtitles } = require("../movy/index");
-const { getStreams: getFlyStreamStreams } = require("../flystream/index");
 const { getStreams: getCinejoyStreams } = require("../cinejoy/index");
 const { CORS_HEADERS } = require("./http-constants");
 const { handleSubtitleProxy } = require("./subtitle-proxy");
@@ -82,8 +79,8 @@ function injectCompanionUrl(code, url) {
 const MANIFEST = {
   id: "community.directstreamsproviders",
   version: "1.0.14",
-  name: "Direct Streams Providers",
-  description: "Direct HTTP streams from Cinejoy, 7Movies, Movy & FlyStream when available. No P2P or torrents.",
+  name: "Cinejoy Direct Streams",
+  description: "Direct HTTP streams from Cinejoy only. No P2P or torrents.",
   resources: ["stream", "subtitles"],
   types: ["movie", "series"],
   idPrefixes: ["tt", "tmdb:"],
@@ -94,13 +91,9 @@ const MANIFEST = {
   },
 };
 
-// Output order: Movy first (often up to 4K), then 7Movies MP4s, then FlyStream.
+// Cinejoy-only: no fallback providers are queried.
 const PROVIDERS = [
-  { tag: "Cinejoy", getStreams: getCinejoyStreams, deadlineMs: 15000 },
-  { tag: "Movy", getStreams: getMovyStreams },
-  { tag: "7Movies", getStreams: get7MoviesStreams },
-  // splitVariants: one row per HLS quality + Auto (variant URLs resolved against baseUrl below)
-  { tag: "FlyStream", getStreams: (id, type, s, e) => getFlyStreamStreams(id, type, s, e, { splitVariants: true }) },
+  { tag: "Cinejoy", getStreams: getCinejoyStreams, deadlineMs: 20000 },
 ];
 
 // Each provider gets this long; a late provider is dropped from the response instead of
@@ -228,13 +221,14 @@ async function resolveStreams(type, rawId, baseUrl) {
       return { streams: [] };
     }
 
-    // Query all providers in parallel, each bounded by its deadline
+    // Query Cinejoy only; each provider is bounded by its deadline
     const results = await Promise.all(
       PROVIDERS.map((p) =>
         withDeadline(p.getStreams(tmdbId, normType, season, episode), p.deadlineMs || PROVIDER_DEADLINE_MS, p.tag)
       )
     );
 
+    console.info(`[StremioRouter] Cinejoy returned ${Array.isArray(results[0]) ? results[0].length : 0} stream(s) for ${normType}:${tmdbId}:${season || ""}:${episode || ""}`);
     const streams = [];
     const subMemo = new Map();
     for (let i = 0; i < PROVIDERS.length; i++) {
@@ -267,7 +261,7 @@ async function handleSubtitles(type, rawId, baseUrl) {
 
     let rawSubs = [];
     try {
-      rawSubs = await fetchMovySubtitles(tmdbId, normType, season, episode);
+      rawSubs = []; // Cinejoy-only addon: no Movy subtitle provider.
     } catch (e) {
       rawSubs = [];
     }
