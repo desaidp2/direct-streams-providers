@@ -115,7 +115,19 @@ function getSeed(mediaId, timeoutMs) {
         fetch(API + "/seed?mediaId=" + encodeURIComponent(mediaId), { headers: API_HEADERS }),
         timeoutMs || REQUEST_TIMEOUT_MS
       );
-      if (!res.ok) throw httpError("seed", res.status);
+      if (!res.ok) {
+        // Capture the refusal source before changing request behaviour. Never log cookies or
+        // request credentials; only bounded response metadata/body are useful for diagnosing 403.
+        let body = "";
+        try { body = (await res.text()).slice(0, 400).replace(/\\s+/g, " "); } catch (_) {}
+        const server = res.headers && res.headers.get ? res.headers.get("server") : "";
+        const ray = res.headers && res.headers.get ? res.headers.get("cf-ray") : "";
+        const contentType = res.headers && res.headers.get ? res.headers.get("content-type") : "";
+        const err = httpError("seed", res.status);
+        err.diagnostic = { server: server || undefined, cfRay: ray || undefined, contentType: contentType || undefined, body: body || undefined };
+        console.warn("[Movy] seed response details " + JSON.stringify(err.diagnostic));
+        throw err;
+      }
       const data = await res.json();
       // Refresh 5 s before the server-side expiry, as before.
       seedCache.set(mediaId, data.seed, Math.max(1000, (data.ttlMs || 30000) - 5000));
