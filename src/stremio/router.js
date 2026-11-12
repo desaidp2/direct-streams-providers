@@ -96,7 +96,7 @@ const MANIFEST = {
 
 // Output order: Movy first (often up to 4K), then 7Movies MP4s, then FlyStream.
 const PROVIDERS = [
-  { tag: "Cinejoy", getStreams: getCinejoyStreams },
+  { tag: "Cinejoy", getStreams: getCinejoyStreams, deadlineMs: 15000 },
   { tag: "Movy", getStreams: getMovyStreams },
   { tag: "7Movies", getStreams: get7MoviesStreams },
   // splitVariants: one row per HLS quality + Auto (variant URLs resolved against baseUrl below)
@@ -231,7 +231,7 @@ async function resolveStreams(type, rawId, baseUrl) {
     // Query all providers in parallel, each bounded by its deadline
     const results = await Promise.all(
       PROVIDERS.map((p) =>
-        withDeadline(p.getStreams(tmdbId, normType, season, episode), PROVIDER_DEADLINE_MS, p.tag)
+        withDeadline(p.getStreams(tmdbId, normType, season, episode), p.deadlineMs || PROVIDER_DEADLINE_MS, p.tag)
       )
     );
 
