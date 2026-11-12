@@ -1,20 +1,20 @@
 {
-    "name": "direct-streams-providers",
-    "version": "1.0.9",
-    "description": "Direct fast stream providers (7Movies, Movy, FlyStream) for Nuvio, WuPlay, and Stremio",
-    "scripts": {
-        "build": "node build.js",
-        "serve": "node server.js",
-        "companion": "node scripts/flystream-companion.js",
-        "test": "npm run test:offline && node test-7movies.js && node test-movy.js && node test-stremio.js",
-        "test:offline": "node test-offline-units.js && node test-router-offline.js && node test-flystream.js && node test-challenge-browser-offline.js && node test-movy-offline.js"
-    },
-    "devDependencies": {
-        "esbuild": "^0.20.0"
-    },
-    "license": "GPL-3.0",
-    "optionalDependencies": {
-        "patchright": "^1.64.0",
-        "playwright-core": "^1.49.0"
-    }
+  "name": "direct-streams-providers",
+  "version": "1.1.0",
+  "description": "Stremio direct HTTP streams (Cinejoy, 7Movies, Movy, FlyStream)",
+  "scripts": {
+    "build": "node build.js",
+    "serve": "node server.js",
+    "companion": "node scripts/flystream-companion.js",
+    "test": "npm run test:offline && node test-7movies.js && node test-movy.js && node test-stremio.js",
+    "test:offline": "node test-offline-units.js && node test-router-offline.js && node test-flystream.js && node test-challenge-browser-offline.js && node test-movy-offline.js && node test-cinejoy-provider.js"
+  },
+  "devDependencies": {
+    "esbuild": "^0.20.0"
+  },
+  "license": "GPL-3.0",
+  "optionalDependencies": {
+    "patchright": "^1.64.0",
+    "playwright-core": "^1.49.0"
+  }
 }
