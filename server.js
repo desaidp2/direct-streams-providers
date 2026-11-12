@@ -114,6 +114,12 @@ const server = http.createServer(async (req, res) => {
 
   console.log(`[HTTP] ${req.method} ${pathname}`);
 
+  if (pathname === "/health") {
+    res.writeHead(200, { ...CORS_HEADERS, "Content-Type": "application/json", "Cache-Control": "no-store" });
+    res.end(JSON.stringify({ status: "ok", service: "direct-streams-stremio", version: "1.1.0" }));
+    return;
+  }
+
   try {
     const clientAddress = effectiveClientAddress(req.socket.remoteAddress, req.headers["x-forwarded-for"]);
     const response = await route(pathname, query, baseUrl, { clientAddress });
