@@ -33,6 +33,7 @@ function resetWorld(over) {
       servers: {}, // name -> { status, sources, delayMs, hang, unauthorizedOnce }
       calls: [], // { server, params, t }
       details: { title: "Jimmy O. Yang: Finally Home", year: 2026, imdbId: "tt40642070" },
+      tmdbMeta: null,
       t0: Date.now(),
     },
     over || {}
@@ -73,6 +74,9 @@ global.fetch = async (url) => {
     if (!world.details) return reply(404, "");
     const nd = { props: { pageProps: { details: world.details } } };
     return reply(200, `<html><script id="__NEXT_DATA__" type="application/json">${JSON.stringify(nd)}</script></html>`);
+  }
+  if (u.hostname === "db.wecollege.net" && u.pathname.startsWith("/3/")) {
+    return world.tmdbMeta ? reply(200, JSON.stringify(world.tmdbMeta)) : reply(404, "{}");
   }
   if (u.hostname === "subtitles.vidy.st") return reply(200, "[]");
   if (u.hostname === "cdn.example" && world.masters && url in world.masters) {
@@ -205,12 +209,14 @@ async function run() {
   console.log("✓ TV request fields");
 
   // 10. Detail page unavailable: still asks the servers (fields the site would send are omitted).
-  resetWorld({ details: null });
+  resetWorld({ details: null, tmdbMeta: { title: "Recovered Movie", release_date: "2025-04-03", external_ids: { imdb_id: "tt7654321" } } });
   world.servers.miami = { status: 200, sources: [src("1080p", "nd")] };
   s = await getStreams("1644919", "movie");
   assert.strictEqual(s.length, 1);
-  assert(!("title" in world.calls[0].params), "no title when the detail page is unavailable");
-  console.log("✓ works without the detail page");
+  assert.strictEqual(world.calls[0].params.title, encodeURIComponent("Recovered Movie"));
+  assert.strictEqual(world.calls[0].params.year, "2025");
+  assert.strictEqual(world.calls[0].params.imdbId, "tt7654321");
+  console.log("✓ recovers title/year/IMDb from TMDB proxy when Movy detail page is unavailable");
 
   // 11. "Auto" labelling: multi-variant master -> Auto (up to X); unreadable master -> Auto;
   //     a language label stays Unknown (<label>).
