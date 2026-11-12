@@ -17,6 +17,7 @@ const { toIso6392 } = require("./languages");
 const { getStreams: get7MoviesStreams } = require("../7movies/index");
 const { getStreams: getMovyStreams, fetchSubtitles: fetchMovySubtitles } = require("../movy/index");
 const { getStreams: getFlyStreamStreams } = require("../flystream/index");
+const { getStreams: getCinejoyStreams } = require("../cinejoy/index");
 const { CORS_HEADERS } = require("./http-constants");
 const { handleSubtitleProxy } = require("./subtitle-proxy");
 const { companionAllowed } = require("./client-address-private-network-check");
@@ -82,7 +83,7 @@ const MANIFEST = {
   id: "community.directstreamsproviders",
   version: "1.0.14",
   name: "Direct Streams Providers",
-  description: "Fast direct streams from 7Movies, Movy & FlyStream up to 4K with multilingual subtitles (No Debrid Needed)",
+  description: "Direct HTTP streams from Cinejoy, 7Movies, Movy & FlyStream when available. No P2P or torrents.",
   resources: ["stream", "subtitles"],
   types: ["movie", "series"],
   idPrefixes: ["tt", "tmdb:"],
@@ -95,6 +96,7 @@ const MANIFEST = {
 
 // Output order: Movy first (often up to 4K), then 7Movies MP4s, then FlyStream.
 const PROVIDERS = [
+  { tag: "Cinejoy", getStreams: getCinejoyStreams },
   { tag: "Movy", getStreams: getMovyStreams },
   { tag: "7Movies", getStreams: get7MoviesStreams },
   // splitVariants: one row per HLS quality + Auto (variant URLs resolved against baseUrl below)
