@@ -330,6 +330,7 @@ async function getStreams(tmdbId, mediaType, season, episode, opts) {
 
     const type = mediaType === "tv" ? "tv" : "movie";
     const s = type === "tv" ? Math.max(1, parseInt(season, 10) || 1) : null;
+    console.info("[Movy] lookup start " + type + ":" + cleanId + (type === "tv" ? " S" + s + "E" + (parseInt(episode, 10) || 1) : ""));
     const ep = type === "tv" ? Math.max(1, parseInt(episode, 10) || 1) : null;
     const cacheKey = type + ":" + cleanId + ":" + s + ":" + ep;
 
@@ -345,10 +346,14 @@ async function getStreams(tmdbId, mediaType, season, episode, opts) {
     try {
       await getSeed(cleanId, Math.min(requestTimeoutMs, left()));
     } catch (e) {
+      console.warn("[Movy] seed failed for " + type + ":" + cleanId + ": " + (e && e.message ? e.message : e));
       streamCache.set(cacheKey, [], UNCERTAIN_EMPTY_TTL_MS);
       return [];
     }
-    let detail = (await timeout(detailPromise, Math.max(1, Math.min(DETAIL_WAIT_MS, left()))).catch(() => ({}))) || {};
+    let detail = (await timeout(detailPromise, Math.max(1, Math.min(DETAIL_WAIT_MS, left()))).catch((e) => {
+      console.warn("[Movy] detail page failed for " + type + ":" + cleanId + ": " + (e && e.message ? e.message : e));
+      return {};
+    })) || {};
     // The Movy detail page may be blocked on hosted runtimes; recover missing fields from the
     // same keyless TMDB proxy already used by FlyStream.
     if (!detail.title || !detail.year || !detail.imdbId) {
@@ -358,8 +363,10 @@ async function getStreams(tmdbId, mediaType, season, episode, opts) {
         year: detail.year || fallback.year,
         imdbId: detail.imdbId || fallback.imdbId,
       });
+      console.info("[Movy] TMDB metadata fallback " + type + ":" + cleanId + " title=" + !!detail.title + " year=" + !!detail.year + " imdb=" + !!detail.imdbId);
     }
     const params = siteParams(type, cleanId, detail, s, ep);
+    console.info("[Movy] request params " + type + ":" + cleanId + " title=" + !!params.title + " year=" + !!params.year + " imdb=" + !!params.imdbId);
 
     const streams = [];
     const seenUrls = new Set();
@@ -443,8 +450,15 @@ async function getStreams(tmdbId, mediaType, season, episode, opts) {
       PRIMARY_SERVERS.map((srv) => fetchServerSources(srv, params, cleanId, Math.min(requestTimeoutMs, left())))
     );
     primaryResults.forEach((res, i) => {
-      if (res.status === "fulfilled" && res.value) collectSources(res.value, PRIMARY_SERVERS[i]);
-      else noteFailure(res.reason);
+      const server = PRIMARY_SERVERS[i];
+      if (res.status === "fulfilled" && res.value) {
+        const count = (res.value.sources && res.value.sources.length || 0) + (res.value.playlist ? 1 : 0);
+        console.info("[Movy] " + server + " returned " + count + " source(s)");
+        collectSources(res.value, server);
+      } else {
+        console.warn("[Movy] " + server + " failed: " + (res.reason && res.reason.message ? res.reason.message : res.reason));
+        noteFailure(res.reason);
+      }
     });
     if (!streams.length && !state.rateLimited) {
       await walkFallback(FALLBACK_SERVERS, (srv, ms) => fetchServerSources(srv, params, cleanId, ms), {
@@ -462,9 +476,11 @@ async function getStreams(tmdbId, mediaType, season, episode, opts) {
     }
 
     if (!streams.length) {
+      console.warn("[Movy] no streams " + type + ":" + cleanId + " timeout=" + sawTimeout + " rateLimited=" + rateLimited);
       streamCache.set(cacheKey, [], sawTimeout || rateLimited ? UNCERTAIN_EMPTY_TTL_MS : EMPTY_TTL_MS);
       return [];
     }
+    console.info("[Movy] found " + streams.length + " stream(s) for " + type + ":" + cleanId);
 
     // 4. Attach subtitles: prioritize embedded payload subtitles
     let subs = payloadSubs;
