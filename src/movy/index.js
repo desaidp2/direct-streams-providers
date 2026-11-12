@@ -61,6 +61,7 @@ const DETAIL_WAIT_MS = 1500;
 const { decryptSources } = require("./mvm1-byte-codecs");
 const { sortByQuality, withTimeout, TtlCache } = require("../shared/provider-utils");
 const { parseMasterPlaylist } = require("../shared/hls-master-playlist-parser");
+const { fetchTitleMetadata } = require("../flystream/tmdb-title-metadata");
 
 /* ---------- Network helpers ---------- */
 
@@ -347,7 +348,17 @@ async function getStreams(tmdbId, mediaType, season, episode, opts) {
       streamCache.set(cacheKey, [], UNCERTAIN_EMPTY_TTL_MS);
       return [];
     }
-    const detail = (await timeout(detailPromise, Math.max(1, Math.min(DETAIL_WAIT_MS, left()))).catch(() => ({}))) || {};
+    let detail = (await timeout(detailPromise, Math.max(1, Math.min(DETAIL_WAIT_MS, left()))).catch(() => ({}))) || {};
+    // The Movy detail page may be blocked on hosted runtimes; recover missing fields from the
+    // same keyless TMDB proxy already used by FlyStream.
+    if (!detail.title || !detail.year || !detail.imdbId) {
+      const fallback = await fetchTitleMetadata(cleanId, type).catch(() => ({}));
+      detail = Object.assign({}, detail, {
+        title: detail.title || (fallback.title ? encodeURIComponent(fallback.title) : undefined),
+        year: detail.year || fallback.year,
+        imdbId: detail.imdbId || fallback.imdbId,
+      });
+    }
     const params = siteParams(type, cleanId, detail, s, ep);
 
     const streams = [];
