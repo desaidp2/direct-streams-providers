@@ -3,7 +3,7 @@
     "version": "1.0.9",
     "description": "Direct fast stream providers (7Movies, Movy, FlyStream) for Nuvio, WuPlay, and Stremio",
     "scripts": {
-        "build": "node build.js",
+        "build": "npx patchright install chromium && node build.js",
         "serve": "node server.js",
         "companion": "node scripts/flystream-companion.js",
         "test": "npm run test:offline && node test-7movies.js && node test-movy.js && node test-stremio.js",
