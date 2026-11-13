@@ -278,7 +278,7 @@ function walkFallback(servers, ask, o) {
               if (!had && o.hasStreams()) grace = setTimeout(finish, FOUND_GRACE_MS);
             },
             (err) => {
-              if (!done) o.noteFailure(err);
+              if (!done) o.noteFailure(err, srv);
             }
           )
           .then(() => {
@@ -344,6 +344,7 @@ async function getStreams(tmdbId, mediaType, season, episode, opts) {
     try {
       await getSeed(cleanId, Math.min(requestTimeoutMs, left()));
     } catch (e) {
+      console.warn("[Movy] seed request failed:", (e && e.status ? "HTTP " + e.status + " - " : "") + ((e && e.message) || e));
       streamCache.set(cacheKey, [], UNCERTAIN_EMPTY_TTL_MS);
       return [];
     }
@@ -424,7 +425,9 @@ async function getStreams(tmdbId, mediaType, season, episode, opts) {
 
     // 2. Miami + Boise together, then the sliding window over the rest.
     const state = { sawTimeout: false, rateLimited: false };
-    const noteFailure = (err) => {
+    const noteFailure = (err, server) => {
+      const status = err && err.status ? "HTTP " + err.status + " - " : "";
+      console.warn("[Movy] " + server + " sources request failed:", status + ((err && err.message) || err));
       if (err && err.status === 429) state.rateLimited = true;
       if (/timeout/i.test(String((err && err.message) || ""))) state.sawTimeout = true;
     };
@@ -433,11 +436,12 @@ async function getStreams(tmdbId, mediaType, season, episode, opts) {
     );
     primaryResults.forEach((res, i) => {
       if (res.status === "fulfilled" && res.value) collectSources(res.value, PRIMARY_SERVERS[i]);
-      else noteFailure(res.reason);
+      else if (res.status === "rejected") noteFailure(res.reason, PRIMARY_SERVERS[i]);
     });
     if (!streams.length && !state.rateLimited) {
       await walkFallback(FALLBACK_SERVERS, (srv, ms) => fetchServerSources(srv, params, cleanId, ms), {
-        left, requestTimeoutMs, collect: collectSources, hasStreams: () => streams.length > 0, noteFailure, state,
+        left, requestTimeoutMs, collect: collectSources, hasStreams: () => streams.length > 0,
+        noteFailure: (err, server) => noteFailure(err, server), state,
       });
     }
     const sawTimeout = state.sawTimeout;
