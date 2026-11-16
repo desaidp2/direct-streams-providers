@@ -1,27 +1,32 @@
-# BingeBox upstream provider reference
+# BingeBox / BingeBang upstream provider references
 
-The BingeBox provider implementation was cross-checked against the public Sora module:
+This branch now supports two distinct upstream flows. The BingeBox unified API is retained as a compatibility fallback; the preferred path is the dedicated BingeBang player extractor.
 
-- Upstream repository: https://github.com/MXFia19/module-sora
-- Upstream implementation: https://github.com/MXFia19/module-sora/blob/main/bingebox/bingebox.js
-- Upstream source config: https://github.com/MXFia19/module-sora/blob/main/bingebox/bingebox.json
+## FMHY Stremio addon
 
-## What the upstream module does
+- Repository: https://github.com/RisPNG/fmhywebstremio
+- Search implementation: https://github.com/RisPNG/fmhywebstremio/blob/main/src/extractors/sources/bingebang-family.ts
+- Player implementation: https://github.com/RisPNG/fmhywebstremio/blob/main/src/extractors/hosts/bingebang-host-architecture.ts
+- Tests and fixtures: https://github.com/RisPNG/fmhywebstremio/tree/main/src/extractors/__fixtures__/bingebang
 
-The upstream script resolves metadata through TMDB and requests the unified BingeBox endpoint:
+The FMHY flow searches `/api/search/movie|tv`, matches the exact title and media type, opens the resulting `play_url`, decodes the page's XOR-obfuscated player configuration to obtain its ticket, requests `/api/player/sources`, decrypts the server envelope, then resolves each server through `/api/player/resolve?src=...`. The server list and resolve responses use a ticket-derived SHA-256 keystream. This is materially different from the old `/api/sources` endpoint.
 
-`GET https://bingebox.ac/api/sources?tmdbId=...&mediaType=movie|show&title=...&year=...[&season=...&episode=...]`
+## Second Stremio integration project
 
-It reads `success` and `sources[]`, then maps `stream.playlist` (or `stream.url`) and `stream.captions[]` into playable results. It uses the BingeBox origin as Referer and supports the Sora/Nuvio `fetchv2` transport.
+- Repository: https://github.com/arthurpetroli/HPmovies
+- Stremio integration notes: https://github.com/arthurpetroli/HPmovies/blob/main/docs/STREMIO-INTEGRATION.md
+- Validation record: https://github.com/arthurpetroli/HPmovies/blob/main/docs/validation/2026-11-08-stremio-recovery.json
+
+HPmovies documents a working Stremio integration of the FMHY addon flow and records BingeBang-labelled sources for both a movie and a native Stremio anime episode. Its local compatibility patch raises the BingeBang server-attempt cap to nine and preserves the provider's native server labels. The validation record is historical evidence from 2026-11-08, not a guarantee that every current request or host works today.
 
 ## Port in this repository
 
-`src/bingebox/index.js` is the Stremio/Node port of that same API flow. It retains the unified endpoint, TMDB metadata lookup, playlist/url fallback, captions, Referer/Origin headers, and native `fetchv2` support. It additionally adapts the result shape to Stremio streams and supports the repository's optional browser-session transport.
+`src/bingebox/bingebang.js` ports the search, player-ticket, encrypted source-list and per-server resolve flow into this repository's existing Stremio provider contract. It tries `https://bingebang.st` first and the older `https://bingebang.tv` host second; set `BINGEBANG_BASE_URL` to override the host. The existing `https://bingebox.ac/api/sources` integration remains as a fallback.
 
-The upstream Sora script itself is not copied verbatim into the Stremio runtime because its catalog/search/details/episode callbacks use the Sora plugin contract, not Stremio's stream-handler contract.
+The port uses the original FMHY player-envelope algorithm, validates movie/episode coordinates, keeps the player Referer on playback headers, and attempts up to nine advertised servers. Offline tests cover movie and episode discovery, ticket propagation, envelope decryption and resolved HLS streams.
 
-## Live availability note
+## Verification and safety
 
-A passing offline test only validates the adapter. The CI live checks currently receive HTTP 403 from the BingeBox API (including the browser-session attempt), so this provider must be treated as unverified until the upstream grants a successful response. No proxy or access-control bypass is included.
+Offline adapter tests do not prove that BingeBang is currently reachable from the deployed host. Earlier live checks of the separate BingeBox `/api/sources` endpoint returned HTTP 403; that does not by itself prove the independent BingeBang player flow is blocked. The new BingeBang live result must be read from the current CI run before claiming live playback works.
 
-This reference is documentation only and does not change CineJoy or 7Movies.
+This work stays on the isolated `add-popcornmovies-bingebox` branch. CineJoy and 7Movies provider code and the production Render service are not changed or deployed.
