@@ -18,6 +18,7 @@ const { getStreams: getCinejoyStreams } = require("../cinejoy/index");
 const { getStreams: get7MoviesStreams } = require("../7movies/index");
 const { getStreams: getMovyStreams } = require("../movy/index");
 const { getStreams: getFlyStreamStreams } = require("../flystream/index");
+const { getStreams: getBingeBoxStreams } = require("../bingebox/index");
 const { CORS_HEADERS } = require("./http-constants");
 const { handleSubtitleProxy } = require("./subtitle-proxy");
 const { companionAllowed } = require("./client-address-private-network-check");
@@ -81,9 +82,9 @@ function injectCompanionUrl(code, url) {
 
 const MANIFEST = {
   id: "community.directstreamsproviders",
-  version: "1.0.14",
-  name: "Cinejoy + 7Movies Direct Streams",
-  description: "Direct HTTP streams from Cinejoy, 7Movies, Movy and FlyStream. No P2P or torrents.",
+  version: "1.0.15",
+  name: "Cinejoy + 7Movies + BingeBox Direct Streams",
+  description: "Direct HTTP streams from Cinejoy, 7Movies, BingeBox, Movy and FlyStream. No P2P or torrents.",
   resources: ["stream", "subtitles"],
   types: ["movie", "series"],
   idPrefixes: ["tt", "tmdb:"],
@@ -94,13 +95,14 @@ const MANIFEST = {
   },
 };
 
-// All four direct HTTP providers already implemented in this repository.
+// All registered direct HTTP providers implemented in this repository.
 // Each runs in parallel with a bounded deadline; unavailable upstreams return no streams.
 const PROVIDERS = [
   { tag: "Cinejoy", getStreams: getCinejoyStreams, deadlineMs: 20000 },
   { tag: "7Movies", getStreams: get7MoviesStreams, deadlineMs: 18000 },
   { tag: "Movy", getStreams: getMovyStreams, deadlineMs: 9000 },
   { tag: "FlyStream", getStreams: getFlyStreamStreams, deadlineMs: 8000 },
+  { tag: "BingeBox", getStreams: getBingeBoxStreams, deadlineMs: 16000 },
 ];
 
 // Each provider gets this long; a late provider is dropped from the response instead of
@@ -228,10 +230,10 @@ async function resolveStreams(type, rawId, baseUrl) {
       return { streams: [] };
     }
 
-    // Query Cinejoy and 7Movies in parallel; each provider is bounded by its deadline
+    // Query every registered provider in parallel; each provider is bounded by its deadline
     const results = await Promise.all(
       PROVIDERS.map((p) =>
-        withDeadline(p.getStreams(tmdbId, normType, season, episode), p.deadlineMs || PROVIDER_DEADLINE_MS, p.tag)
+        withDeadline(p.getStreams(tmdbId, normType, season, episode), envDeadline > 0 ? envDeadline : (p.deadlineMs || PROVIDER_DEADLINE_MS), p.tag)
       )
     );
 

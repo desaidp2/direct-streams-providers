@@ -6,7 +6,7 @@
 
 A high-performance, low-memory direct video streaming suite that provides fast, account-free streams for **Nuvio**, **WuPlay**, and **Stremio**.
 
-Currently includes **7movies.ac**, **movy.sx** and **flystream.net**. All scrapers resolve direct MP4 and HLS streams (up to 4K / 2160p) complete with localized subtitle tracks and ExoPlayer native header forwarding.
+Currently includes **7movies.ac**, **movy.sx**, **flystream.net**, **Cinejoy**, and an isolated **BingeBox / PopcornMovies** integration. All scrapers resolve direct MP4 and HLS streams (up to 4K / 2160p) complete with localized subtitle tracks and ExoPlayer native header forwarding.
 
 ---
 
@@ -36,6 +36,7 @@ Tested and verified live on **onn. 4K Plus Streaming (Android TV)** running Nuvi
 
 - **7Movies** — resolves 7movies.ac's VidLink upstream: direct MP4, 360p–1080p, with captions.
 - **Movy** — resolves movy.sx's stream API (api.wecollege.net). Custom seed handshake ("mvm1") decrypted using 100% pure ECMAScript byte codecs (QuickJS/Hermes safe). Direct HLS up to 2160p (4K) with subtitle tracks. Asks the site's 13 original-audio servers in the site's order (Miami + Boise first, then a sliding window of 3), so titles only the fallback servers carry (e.g. Reno 900p) are found too. See [Movy server fallback](docs/movy-server-fallback.md).
+- **BingeBox / PopcornMovies** — resolves the BingeBox unified `/api/sources` API using TMDB metadata; returns direct HLS/MP4 source URLs and caption tracks. Uses `BINGEBOX_BASE_URL` (default `https://bingebox.ac`) so the upstream origin can be changed without touching the other providers. Live upstream validation is still pending.
 - **FlyStream** — resolves flystream.net's JSON stream API (`/api/streams`), ported from the hostreamio Dart `FlyStreamScraper`: title/year/IMDb looked up from the TMDB id, one row per HLS quality plus an **Auto** row (sources tagged `S1`, `S2`, …), with the challenge-browser session cookies forwarded to ExoPlayer (`reauth=session`). Needs the self-hosted companion (a Raspberry Pi or any Linux box running `server.js`). See [FlyStream Companion Guide](docs/flystream-companion.md).
 
 ## ✨ Features & Engineering Optimizations

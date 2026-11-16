@@ -1,6 +1,6 @@
 {
   "name": "Direct Streams Providers",
-  "version": "1.0.14",
+  "version": "1.0.15",
   "scrapers": [
     {
       "id": "7movies",
@@ -60,6 +60,27 @@
         "mp4"
       ],
       "logo": "https://flystream.net/favicon.ico",
+      "contentLanguage": [
+        "en"
+      ]
+    },
+    {
+      "id": "bingebox",
+      "name": "BingeBox / PopcornMovies",
+      "description": "BingeBox unified sources API - direct HLS/MP4 streams with captions",
+      "version": "0.1.0",
+      "author": "Community",
+      "supportedTypes": [
+        "movie",
+        "tv"
+      ],
+      "filename": "providers/bingebox.js",
+      "enabled": true,
+      "formats": [
+        "m3u8",
+        "mp4"
+      ],
+      "logo": "https://www.google.com/s2/favicons?domain=bingebox.ac&sz=128",
       "contentLanguage": [
         "en"
       ]

@@ -48,7 +48,10 @@ const EXTERNAL_MODULES = [
     'react-native-cheerio',
     'cheerio',
     'crypto-js',
-    'axios'
+    'axios',
+    'node:crypto',
+    'node:path',
+    'node:child_process'
 ];
 
 // Get provider names from command line or discover all

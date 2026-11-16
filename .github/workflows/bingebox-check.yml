@@ -1,0 +1,40 @@
+name: BingeBox provider checks
+
+on:
+  push:
+    branches:
+      - add-popcornmovies-bingebox
+  pull_request:
+    branches:
+      - stremio-cinejoy-render
+  workflow_dispatch:
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm install --no-audit --no-fund
+      - run: npm run build
+      - run: node --check providers/bingebox.js
+      - run: node test-bingebox-offline.js
+      - run: node test-bingebang-fmhy.js
+      - name: Install Chromium for browser smoke test
+        run: npx patchright install chromium
+        continue-on-error: true
+      - name: BingeBox browser live smoke test
+        run: node test-bingebox-browser-live.js
+        continue-on-error: true
+      - name: BingeBox live upstream smoke test
+        run: node test-bingebox-live.js
+        continue-on-error: true
+      - name: PopcornMovies alternate origin smoke test
+        run: node test-bingebox-live.js
+        env:
+          BINGEBOX_BASE_URL: https://popcornmovies.ac
+        continue-on-error: true
+      - run: node test-router-offline.js

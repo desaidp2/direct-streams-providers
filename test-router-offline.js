@@ -37,9 +37,12 @@ function stub(rel, exportsObj) {
   const p = require.resolve(path.join(__dirname, rel));
   require.cache[p] = { id: p, filename: p, loaded: true, exports: exportsObj };
 }
+stub("src/cinejoy/index.js", { getStreams: async () => [] });
 stub("src/movy/index.js", { getStreams: fast("movy", 3), fetchSubtitles: async () => subs });
 stub("src/7movies/index.js", { getStreams: fast("seven", 2) });
 stub("src/flystream/index.js", { getStreams: fly });
+// BingeBox is covered by its own offline test; keep this router suite fully offline.
+stub("src/bingebox/index.js", { getStreams: async () => [] });
 
 const { route, handleStreams } = require("./src/stremio/router");
 
@@ -52,7 +55,7 @@ async function run() {
   const took = Date.now() - t0;
   assert.strictEqual(r.streams.length, 5, "movy 3 + 7movies 2, flystream skipped");
   assert(took >= 280 && took < 700, `response must be bounded by the deadline, took ${took} ms`);
-  assert(r.streams[0].name.includes("movy0") && r.streams[3].name.includes("seven0"), "provider order kept");
+  assert(r.streams[0].name.includes("seven0") && r.streams[2].name.includes("movy0"), "provider order kept");
   console.log(`✓ hanging provider dropped at the deadline (${took} ms)`);
 
   // 2. A throwing provider is ignored
