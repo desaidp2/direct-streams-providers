@@ -21,7 +21,7 @@ HPmovies documents a working Stremio integration of the FMHY addon flow and reco
 
 ## Port in this repository
 
-`src/bingebox/bingebang.js` ports the search, player-ticket, encrypted source-list and per-server resolve flow into this repository's existing Stremio provider contract. It tries `https://bingebang.st` first and the older `https://bingebang.tv` host second; set `BINGEBANG_BASE_URL` to override the host. The existing `https://bingebox.ac/api/sources` integration remains as a fallback.
+`src/bingebox/bingebang.js` ports the search, player-ticket, encrypted source-list and per-server resolve flow into this repository's existing Stremio provider contract. It now tries the current official `https://bingebang.sx` domain first and `https://bingebang.st` second (the latter redirects to `.sx`); `bingebang.tv` is retired. Set `BINGEBANG_BASE_URL` to override the host. The existing `https://bingebox.ac/api/sources` integration remains as a fallback.
 
 The port uses the original FMHY player-envelope algorithm, validates movie/episode coordinates, keeps the player Referer on playback headers, and attempts up to nine advertised servers. Offline tests cover movie and episode discovery, ticket propagation, envelope decryption and resolved HLS streams.
 
