@@ -16,9 +16,50 @@ const MEDIA_UA = "okhttp/4.12.0";
 const REFERER = BASE_URL + "/";
 const cache = new TtlCache(100, 5 * 60 * 1000);
 const TIMEOUT_MS = 6500;
+const BROWSER_ORIGIN_PAGE = BASE_URL + "/robots.txt";
 
 function headers() {
   return { "User-Agent": UA, "Referer": REFERER, "Origin": BASE_URL };
+}
+
+function hostChallengeBrowser() {
+  return typeof challengeBrowser !== "undefined" &&
+    challengeBrowser && typeof challengeBrowser.execute === "function"
+    ? challengeBrowser : null;
+}
+
+function inPageFetchJs(path) {
+  return "(async () => { const r = await fetch(" + JSON.stringify(path) +
+    ", { headers: { Accept: 'application/json' }, credentials: 'same-origin' });" +
+    " return JSON.stringify({ status: r.status, body: await r.text() }); })()";
+}
+
+async function fetchSources(apiUrl) {
+  const cb = hostChallengeBrowser();
+  if (cb) {
+    try {
+      const browserResult = await cb.execute(BROWSER_ORIGIN_PAGE, {
+        reuse: true,
+        evaluateJs: inPageFetchJs(apiUrl.slice(BASE_URL.length)),
+        timeoutMs: TIMEOUT_MS
+      });
+      const response = JSON.parse(String((browserResult && browserResult.result) || ""));
+      if (response.status !== 200) throw new Error("browser HTTP " + response.status);
+      const cookie = browserResult.cookies ||
+        (typeof cb.getCookies === "function" ? await cb.getCookies(BASE_URL) : "");
+      const userAgent = browserResult.userAgent ||
+        (typeof cb.getUserAgent === "function" ? await cb.getUserAgent() : UA);
+      return { payload: JSON.parse(response.body), session: { cookie, userAgent } };
+    } catch (err) {
+      console.warn("[BingeBox] Browser API path failed, trying direct fetch:", err && err.message || err);
+    }
+  }
+
+  const res = await fetchWithTimeout(apiUrl, {
+    headers: Object.assign({ "Accept": "application/json" }, headers())
+  }, TIMEOUT_MS, "BingeBox sources");
+  if (!res.ok) throw new Error("BingeBox API HTTP " + res.status);
+  return { payload: await res.json(), session: null };
 }
 
 async function getMetadata(tmdbId, type) {
@@ -40,7 +81,7 @@ async function getMetadata(tmdbId, type) {
   return result;
 }
 
-function mapCaptions(captions) {
+function mapCaptions(captions, playbackHeaders) {
   if (!Array.isArray(captions)) return [];
   const seen = new Set();
   const out = [];
@@ -52,7 +93,7 @@ function mapCaptions(captions) {
       url: cap.url,
       language: String(cap.language || label).slice(0, 32),
       name: label,
-      headers: { "User-Agent": MEDIA_UA, "Referer": REFERER }
+      headers: playbackHeaders || { "User-Agent": MEDIA_UA, "Referer": REFERER }
     });
   }
   return out;
@@ -80,11 +121,14 @@ async function getStreams(tmdbId, type, season, episode) {
     const cacheKey = "streams:" + params.toString();
     const cached = cache.get(cacheKey);
     if (cached) return cached;
-    const res = await fetchWithTimeout(API_URL + "?" + params.toString(), {
-      headers: Object.assign({ "Accept": "application/json" }, headers())
-    }, TIMEOUT_MS, "BingeBox sources");
-    if (!res.ok) throw new Error("BingeBox API HTTP " + res.status);
-    const payload = await res.json();
+    const fetched = await fetchSources(API_URL + "?" + params.toString());
+    const payload = fetched.payload;
+    const playbackHeaders = {
+      "User-Agent": (fetched.session && fetched.session.userAgent) || MEDIA_UA,
+      "Referer": REFERER,
+      "Origin": BASE_URL
+    };
+    if (fetched.session && fetched.session.cookie) playbackHeaders.Cookie = fetched.session.cookie;
     if (!payload || payload.success !== true || !Array.isArray(payload.sources)) return [];
     const seen = new Set();
     const streams = [];
@@ -95,16 +139,16 @@ async function getStreams(tmdbId, type, season, episode) {
       if (typeof url !== "string" || !/^https?:\/\//i.test(url) || seen.has(url)) continue;
       seen.add(url);
       const label = String(source.label || source.sourceId || "Server");
-      const subtitles = mapCaptions(stream.captions);
+      const subtitles = mapCaptions(stream.captions, playbackHeaders);
       streams.push({
         name: "BingeBox - " + label,
         title: (isTv ? "S" + String(season).padStart(2, "0") + "E" + String(episode).padStart(2, "0") : "Movie") + " - Auto",
         url,
         quality: /2160|4k/i.test(url) ? "4K" : "Auto",
-        headers: { "User-Agent": MEDIA_UA, "Referer": REFERER, "Origin": BASE_URL },
+        headers: playbackHeaders,
         behaviorHints: {
           notWebReady: true,
-          proxyHeaders: { request: { "User-Agent": MEDIA_UA, "Referer": REFERER, "Origin": BASE_URL } }
+          proxyHeaders: { request: playbackHeaders }
         },
         subtitles
       });
