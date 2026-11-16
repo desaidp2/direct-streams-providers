@@ -62,6 +62,9 @@ const { getStreams } = require("./src/bingebox");
     if (String(url).includes("api.themoviedb.org/3/movie/27205")) {
       return { ok: true, json: async () => ({ title: "Inception", release_date: "2010-07-16" }) };
     }
+    if (String(url).startsWith("https://bingebang.st/api/search/") || String(url).startsWith("https://bingebang.tv/api/search/")) {
+      return { ok: true, json: async () => ({ results: [] }) };
+    }
     if (String(url).startsWith("https://bingebox.ac/api/sources?")) {
       return {
         ok: true,
@@ -75,7 +78,7 @@ const { getStreams } = require("./src/bingebox");
   };
   try {
     const nativeStreams = await getStreams("27205", "movie");
-    assert.strictEqual(nativeCalls, 2, "TMDB metadata and BingeBox sources should use fetchv2");
+    assert.strictEqual(nativeCalls, 4, "TMDB metadata, both BingeBang hosts, and legacy BingeBox sources should use fetchv2");
     assert.strictEqual(nativeStreams.length, 1);
     assert.strictEqual(nativeStreams[0].name, "BingeBox - native-cdn");
   } finally {
@@ -88,6 +91,9 @@ const { getStreams } = require("./src/bingebox");
   const savedFetchV2 = global.fetchv2;
   global.fetchv2 = async (url) => {
     if (String(url).includes("/3/movie/155?")) return JSON.stringify({ title: "The Dark Knight", release_date: "2008-07-18" });
+    if (String(url).startsWith("https://bingebang.st/api/search/") || String(url).startsWith("https://bingebang.tv/api/search/")) {
+      return JSON.stringify({ results: [] });
+    }
     if (String(url).startsWith("https://bingebox.ac/api/sources?")) {
       return JSON.stringify({ success: true, sources: [{ label: "raw-body", stream: { url: "https://cdn.example/raw.m3u8" } }] });
     }
@@ -109,6 +115,7 @@ const { getStreams } = require("./src/bingebox");
   global.fetchv2 = async () => { throw new Error("native bridge unavailable"); };
   global.fetch = async (url) => {
     if (String(url).includes("/3/movie/550?")) return { ok: true, json: async () => ({ title: "Fight Club", release_date: "1999-10-15" }) };
+    if (String(url).startsWith("https://bingebang.st/api/search/") || String(url).startsWith("https://bingebang.tv/api/search/")) return { ok: true, json: async () => ({ results: [] }) };
     if (String(url).startsWith("https://bingebox.ac/api/sources?")) {
       return { ok: true, json: async () => ({ success: true, sources: [{ label: "fallback", stream: { url: "https://cdn.example/fallback.mp4" } }] }) };
     }
