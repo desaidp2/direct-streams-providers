@@ -33,7 +33,7 @@ async function getMetadata(tmdbId, type) {
   const data = await res.json();
   const result = {
     title: String(type === "tv" ? (data.name || data.original_name || "") : (data.title || data.original_title || "")),
-    year: String((type === "tv" ? data.first_air_date : data.release_date || "").slice(0, 4))
+    year: String(((type === "tv" ? data.first_air_date : data.release_date) || "").slice(0, 4))
   };
   if (!result.title) throw new Error("TMDB title missing");
   cache.set("meta:" + key, result, 24 * 60 * 60 * 1000);
