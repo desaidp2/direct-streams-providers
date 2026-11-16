@@ -54,6 +54,22 @@ function headers() {
   return { "User-Agent": UA, "Referer": REFERER, "Origin": BASE_URL };
 }
 
+// Nuvio/Sora-like hosts may expose fetchv2, which performs native HTTP requests
+// outside browser CORS restrictions. Prefer it when available, matching the
+// upstream BingeBox module's transport behavior.
+async function fetchUpstream(url, init, label) {
+  if (typeof fetchv2 === "function") {
+    const opts = init || {};
+    const response = await withTimeout(
+      fetchv2(url, opts.headers || {}, opts.method || "GET", opts.body || null),
+      TIMEOUT_MS,
+      label || "BingeBox native fetch"
+    );
+    return response;
+  }
+  return fetchWithTimeout(url, init, TIMEOUT_MS, label || "BingeBox fetch");
+}
+
 function hostChallengeBrowser() {
   return typeof challengeBrowser !== "undefined" &&
     challengeBrowser && typeof challengeBrowser.execute === "function"
@@ -87,9 +103,9 @@ async function fetchSources(apiUrl) {
     }
   }
 
-  const res = await fetchWithTimeout(apiUrl, {
+  const res = await fetchUpstream(apiUrl, {
     headers: Object.assign({ "Accept": "application/json" }, headers())
-  }, TIMEOUT_MS, "BingeBox sources");
+  }, "BingeBox sources");
   if (!res.ok) throw new Error("BingeBox API HTTP " + res.status);
   return { payload: await res.json(), session: null };
 }
@@ -101,7 +117,7 @@ async function getMetadata(tmdbId, type) {
   const endpoint = type === "tv" ? "tv" : "movie";
   const url = "https://api.themoviedb.org/3/" + endpoint + "/" +
     encodeURIComponent(tmdbId) + "?api_key=" + TMDB_API_KEY + "&language=en-US";
-  const res = await fetchWithTimeout(url, { headers: { "User-Agent": UA } }, TIMEOUT_MS, "BingeBox TMDB metadata");
+  const res = await fetchUpstream(url, { headers: { "User-Agent": UA } }, "BingeBox TMDB metadata");
   if (!res.ok) throw new Error("TMDB metadata HTTP " + res.status);
   const data = await res.json();
   const result = {
