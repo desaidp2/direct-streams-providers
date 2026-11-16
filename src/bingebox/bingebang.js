@@ -4,7 +4,7 @@
  */
 const { createHash } = require("node:crypto");
 
-const DEFAULT_BASES = ["https://bingebang.st", "https://bingebang.tv"];
+const DEFAULT_BASES = ["https://bingebang.sx", "https://bingebang.st"];
 const PLAYER_ENVELOPE_SEED = "9e2b7c41a0f6d85b3c1e7a94f25d0b86";
 const QUALITY_HEIGHTS = { "4K ULTRA HD": 2160, "FULL HD": 1080, "HD": 720, "SD": 480 };
 const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36";
