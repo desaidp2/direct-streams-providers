@@ -68,7 +68,7 @@ async function runCase(isTv) {
   assert.equal(streams[0].url, "https://cdn.example/master.m3u8");
   assert.equal(streams[0].name, "BingeBang - Yildun");
   assert.equal(streams[0].quality, "4K");
-  assert.equal(requests[0].url.hostname, "bingebang.st");
+  assert.equal(requests[0].url.hostname, "bingebang.sx");
   assert.equal(requests[0].url.pathname, isTv ? "/api/search/tv" : "/api/search/movie");
   assert.equal(requests[1].url.pathname, isTv ? "/tv/play/the-boys-test/2/3" : "/movie/play/inception-test");
   assert.equal(requests[2].options.headers["X-BB-Player"], "1");
