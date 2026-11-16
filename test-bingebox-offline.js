@@ -83,6 +83,47 @@ const { getStreams } = require("./src/bingebox");
     else global.fetchv2 = originalFetchV2;
   }
 
+  // Some Nuvio/Sora builds return a raw JSON body string from fetchv2.
+  const savedFetch = global.fetch;
+  const savedFetchV2 = global.fetchv2;
+  global.fetchv2 = async (url) => {
+    if (String(url).includes("/3/movie/155?")) return JSON.stringify({ title: "The Dark Knight", release_date: "2008-07-18" });
+    if (String(url).startsWith("https://bingebox.ac/api/sources?")) {
+      return JSON.stringify({ success: true, sources: [{ label: "raw-body", stream: { url: "https://cdn.example/raw.m3u8" } }] });
+    }
+    throw new Error("Unexpected raw-body fetchv2 URL: " + url);
+  };
+  try {
+    const rawStreams = await getStreams("155", "movie");
+    assert.strictEqual(rawStreams.length, 1, "raw-string fetchv2 responses should be normalized");
+    assert.strictEqual(rawStreams[0].name, "BingeBox - raw-body");
+  } finally {
+    global.fetch = savedFetch;
+    if (savedFetchV2 === undefined) delete global.fetchv2;
+    else global.fetchv2 = savedFetchV2;
+  }
+
+  // If the app's native bridge rejects, plain fetch remains the compatibility fallback.
+  const fallbackFetch = global.fetch;
+  const fallbackFetchV2 = global.fetchv2;
+  global.fetchv2 = async () => { throw new Error("native bridge unavailable"); };
+  global.fetch = async (url) => {
+    if (String(url).includes("/3/movie/550?")) return { ok: true, json: async () => ({ title: "Fight Club", release_date: "1999-10-15" }) };
+    if (String(url).startsWith("https://bingebox.ac/api/sources?")) {
+      return { ok: true, json: async () => ({ success: true, sources: [{ label: "fallback", stream: { url: "https://cdn.example/fallback.mp4" } }] }) };
+    }
+    throw new Error("Unexpected fallback fetch URL: " + url);
+  };
+  try {
+    const fallbackStreams = await getStreams("550", "movie");
+    assert.strictEqual(fallbackStreams.length, 1, "plain fetch should be tried when fetchv2 rejects");
+    assert.strictEqual(fallbackStreams[0].name, "BingeBox - fallback");
+  } finally {
+    global.fetch = fallbackFetch;
+    if (fallbackFetchV2 === undefined) delete global.fetchv2;
+    else global.fetchv2 = fallbackFetchV2;
+  }
+
   const { route } = require("./src/stremio/router");
   const manifestRes = await route("/manifest.json", {}, "http://localhost");
   const manifest = JSON.parse(manifestRes.body);
