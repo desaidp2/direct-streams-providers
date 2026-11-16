@@ -11,7 +11,7 @@ const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML,
 
 function getBaseUrls() {
   if (typeof process !== "undefined" && process.env && process.env.BINGEBANG_BASE_URL) {
-    return [process.env.BINGEBANG_BASE_URL.replace(/\\/+$/, "")];
+    return [process.env.BINGEBANG_BASE_URL.replace(/\/+$/, "")];
   }
   return DEFAULT_BASES;
 }
@@ -35,7 +35,7 @@ function decryptEnvelope(envelope, ticket) {
 }
 
 function readPlayerConfiguration(html) {
-  const match = String(html || "").match(/var k=\\[([\\d,\\s]+)\\],d=\\[([\\d,\\s]+)\\]/);
+  const match = String(html || "").match(/var k=\[([\d,\s]+)\],d=\[([\d,\s]+)\]/);
   if (!match || !match[1] || !match[2]) return undefined;
   const key = match[1].split(",").map(Number);
   const data = match[2].split(",").map(Number);
@@ -61,9 +61,9 @@ async function getStreamsAtBase(meta, isTv, season, episode, fetchUpstream, base
     const searchResponse = await checkedResponse(fetchUpstream, searchUrl.toString(), { headers }, "BingeBang search");
     const search = await searchResponse.json();
     if (!search || !Array.isArray(search.results)) return [];
-    const normalized = String(meta.title).toLocaleLowerCase().replace(/[^\\p{L}\\p{N}]+/gu, " ").trim();
+    const normalized = String(meta.title).toLocaleLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
     const match = search.results.find(item => {
-      const title = String(item && (item.title || item.name) || "").toLocaleLowerCase().replace(/[^\\p{L}\\p{N}]+/gu, " ").trim();
+      const title = String(item && (item.title || item.name) || "").toLocaleLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
       return title === normalized &&
         item.media_type === (isTv ? "tv" : "movie") &&
         typeof item.play_url === "string" &&
@@ -75,15 +75,15 @@ async function getStreamsAtBase(meta, isTv, season, episode, fetchUpstream, base
 
     const playerUrl = new URL(match.play_url, searchUrl);
     const episodeUrl = isTv
-      ? new URL(playerUrl.pathname.replace(/\\/$/, "") + "/" + season + "/" + episode, playerUrl)
+      ? new URL(playerUrl.pathname.replace(/\/$/, "") + "/" + season + "/" + episode, playerUrl)
       : playerUrl;
     const page = await checkedResponse(fetchUpstream, episodeUrl.toString(), { headers: Object.assign({}, headers, { Accept: "text/html" }) }, "BingeBang player page");
     const configuration = readPlayerConfiguration(await page.text());
-    const ticket = configuration && configuration.match(/ticket:\\s*"([^"]+)"/)?.[1];
+    const ticket = configuration && configuration.match(/ticket:\s*"([^"]+)"/)?.[1];
     if (!configuration || !ticket) return [];
 
-    const declaredType = configuration.match(/mediaType:\\s*"([a-z]+)"/)?.[1];
-    const declaredEpisode = configuration.match(/season:\\s*(\\d+),\\s*episode:\\s*(\\d+)/);
+    const declaredType = configuration.match(/mediaType:\s*"([a-z]+)"/)?.[1];
+    const declaredEpisode = configuration.match(/season:\s*(\d+),\s*episode:\s*(\d+)/);
     if (declaredType !== (isTv ? "episode" : "movie")) return [];
     if (isTv && (Number(declaredEpisode && declaredEpisode[1]) !== season || Number(declaredEpisode && declaredEpisode[2]) !== episode)) return [];
 
@@ -105,7 +105,7 @@ async function getStreamsAtBase(meta, isTv, season, episode, fetchUpstream, base
       if (typeof resolveEnvelope !== "string") continue;
       let resolved;
       try { resolved = JSON.parse(decryptEnvelope(resolveEnvelope, ticket)); } catch (_) { continue; }
-      if (!resolved || !resolved.ok || typeof resolved.url !== "string" || !/^https?:\\/\\//i.test(resolved.url) || seen.has(resolved.url)) continue;
+      if (!resolved || !resolved.ok || typeof resolved.url !== "string" || !/^https?:\/\//i.test(resolved.url) || seen.has(resolved.url)) continue;
       seen.add(resolved.url);
       const quality = String(server.quality || "").toUpperCase();
       const height = QUALITY_HEIGHTS[quality];
