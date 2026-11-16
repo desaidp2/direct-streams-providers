@@ -233,7 +233,7 @@ async function resolveStreams(type, rawId, baseUrl) {
     // Query every registered provider in parallel; each provider is bounded by its deadline
     const results = await Promise.all(
       PROVIDERS.map((p) =>
-        withDeadline(p.getStreams(tmdbId, normType, season, episode), p.deadlineMs || PROVIDER_DEADLINE_MS, p.tag)
+        withDeadline(p.getStreams(tmdbId, normType, season, episode), envDeadline > 0 ? envDeadline : (p.deadlineMs || PROVIDER_DEADLINE_MS), p.tag)
       )
     );
 
