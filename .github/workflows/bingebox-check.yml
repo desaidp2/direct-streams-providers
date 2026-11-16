@@ -22,6 +22,7 @@ jobs:
       - run: npm run build
       - run: node --check providers/bingebox.js
       - run: node test-bingebox-offline.js
+      - run: node test-bingebang-fmhy.js
       - name: Install Chromium for browser smoke test
         run: npx patchright install chromium
         continue-on-error: true
