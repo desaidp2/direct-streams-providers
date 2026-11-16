@@ -60,9 +60,11 @@ function mapCaptions(captions) {
 
 async function getStreams(tmdbId, type, season, episode) {
   const id = String(tmdbId || "");
-  if (!/^\d{1,12}$/.test(id)) return [];
+  if (!/^\d{1,12}$/.test(id) || Number(id) <= 0) return [];
   const isTv = type === "tv" || type === "series";
   const mediaType = isTv ? "show" : "movie";
+  const s = Number(season), e = Number(episode);
+  if (isTv && (!Number.isInteger(s) || s < 1 || !Number.isInteger(e) || e < 1)) return [];
   try {
     const meta = await getMetadata(id, isTv ? "tv" : "movie");
     const params = new URLSearchParams({
@@ -72,8 +74,6 @@ async function getStreams(tmdbId, type, season, episode) {
       year: meta.year || ""
     });
     if (isTv) {
-      const s = Number(season), e = Number(episode);
-      if (!Number.isInteger(s) || s < 1 || !Number.isInteger(e) || e < 1) return [];
       params.set("season", String(s));
       params.set("episode", String(e));
     }
