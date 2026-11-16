@@ -19,7 +19,7 @@ const { getStreams } = require("./src/bingebox");
     execute: async (url, options) => {
       browserCalls++;
       assert(options.reuse === true, "browser page should be reused");
-      if (url.startsWith("https://bingebang.st/") || url.startsWith("https://bingebang.tv/")) {
+      if (url.startsWith("https://bingebang.sx/") || url.startsWith("https://bingebang.st/")) {
         return { result: JSON.stringify({ status: 403, body: "" }), cookies: "", userAgent: "Browser Test UA" };
       }
       assert(url.startsWith("https://bingebox.ac/"), "browser must load BingeBox origin");
@@ -65,7 +65,7 @@ const { getStreams } = require("./src/bingebox");
     if (String(url).includes("api.themoviedb.org/3/movie/27205")) {
       return { ok: true, json: async () => ({ title: "Inception", release_date: "2010-07-16" }) };
     }
-    if (String(url).startsWith("https://bingebang.st/api/search/") || String(url).startsWith("https://bingebang.tv/api/search/")) {
+    if (String(url).startsWith("https://bingebang.sx/api/search/") || String(url).startsWith("https://bingebang.sx/api/search/")) {
       return { ok: true, json: async () => ({ results: [] }) };
     }
     if (String(url).startsWith("https://bingebox.ac/api/sources?")) {
@@ -94,7 +94,7 @@ const { getStreams } = require("./src/bingebox");
   const savedFetchV2 = global.fetchv2;
   global.fetchv2 = async (url) => {
     if (String(url).includes("/3/movie/155?")) return JSON.stringify({ title: "The Dark Knight", release_date: "2008-07-18" });
-    if (String(url).startsWith("https://bingebang.st/api/search/") || String(url).startsWith("https://bingebang.tv/api/search/")) {
+    if (String(url).startsWith("https://bingebang.sx/api/search/") || String(url).startsWith("https://bingebang.sx/api/search/")) {
       return JSON.stringify({ results: [] });
     }
     if (String(url).startsWith("https://bingebox.ac/api/sources?")) {
@@ -118,7 +118,7 @@ const { getStreams } = require("./src/bingebox");
   global.fetchv2 = async () => { throw new Error("native bridge unavailable"); };
   global.fetch = async (url) => {
     if (String(url).includes("/3/movie/550?")) return { ok: true, json: async () => ({ title: "Fight Club", release_date: "1999-10-15" }) };
-    if (String(url).startsWith("https://bingebang.st/api/search/") || String(url).startsWith("https://bingebang.tv/api/search/")) return { ok: true, json: async () => ({ results: [] }) };
+    if (String(url).startsWith("https://bingebang.sx/api/search/") || String(url).startsWith("https://bingebang.sx/api/search/")) return { ok: true, json: async () => ({ results: [] }) };
     if (String(url).startsWith("https://bingebox.ac/api/sources?")) {
       return { ok: true, json: async () => ({ success: true, sources: [{ label: "fallback", stream: { url: "https://cdn.example/fallback.mp4" } }] }) };
     }
