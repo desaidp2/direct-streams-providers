@@ -8,24 +8,17 @@
 function withTimeout(promise, ms, label) {
   if (typeof setTimeout !== "function") return promise;
   let timer;
-  const timeout = new Promise((_, reject) => {
-    timer = setTimeout(() => reject(new Error((label || "Timeout") + " " + ms + "ms")), ms);
-  });
+  const timeout = new Promise((_, reject) => { timer = setTimeout(() => reject(new Error((label || "Timeout") + " " + ms + "ms")), ms); });
   return Promise.race([promise, timeout]).then(
     value => { if (typeof clearTimeout === "function") clearTimeout(timer); return value; },
     err => { if (typeof clearTimeout === "function") clearTimeout(timer); throw err; }
   );
 }
 function fetchWithTimeout(url, init, ms, label) {
-  if (typeof AbortController !== "function" || typeof setTimeout !== "function") {
-    return withTimeout(fetch(url, init), ms, label);
-  }
+  if (typeof AbortController !== "function" || typeof setTimeout !== "function") return withTimeout(fetch(url, init), ms, label);
   const controller = new AbortController();
   const opts = Object.assign({}, init || {}, { signal: controller.signal });
-  return withTimeout(fetch(url, opts), ms, label).catch(err => {
-    controller.abort();
-    throw err;
-  });
+  return withTimeout(fetch(url, opts), ms, label).catch(err => { controller.abort(); throw err; });
 }
 class TtlCache {
   constructor(limit, defaultTtlMs) { this.limit = limit; this.defaultTtlMs = defaultTtlMs; this.map = new Map(); }
@@ -55,7 +48,7 @@ const MEDIA_UA = "okhttp/4.12.0";
 const REFERER = BASE_URL + "/";
 const cache = new TtlCache(100, 5 * 60 * 1000);
 const TIMEOUT_MS = 6500;
-const BROWSER_ORIGIN_PAGE = BASE_URL + "/robots.txt";
+const BROWSER_ORIGIN_PAGE = BASE_URL + "/";
 
 function headers() {
   return { "User-Agent": UA, "Referer": REFERER, "Origin": BASE_URL };
@@ -69,7 +62,7 @@ function hostChallengeBrowser() {
 
 function inPageFetchJs(path) {
   return "(async () => { const r = await fetch(" + JSON.stringify(path) +
-    ", { headers: { Accept: 'application/json' }, credentials: 'same-origin' });" +
+    ", { headers: { Accept: 'application/json' }, credentials: 'include', referrer: " + JSON.stringify(REFERER) + " });" +
     " return JSON.stringify({ status: r.status, body: await r.text() }); })()";
 }
 
