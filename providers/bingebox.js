@@ -60,7 +60,7 @@ function headers() {
 // Sora/Nuvio builds differ: fetchv2 may return a Response, a raw body string,
 // or reject on non-2xx. Match the upstream module's fallback and normalize raw bodies.
 function normalizeUpstreamResponse(response) {
-  if (response && typeof response.json === "function" && typeof response.text === "function") return response;
+  if (response && typeof response.json === "function") return response;
   const body = typeof response === "string" ? response : (response == null ? "" : String(response));
   return {
     ok: true,
