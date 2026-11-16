@@ -54,13 +54,42 @@ const { getStreams } = require("./src/bingebox");
     else global.challengeBrowser = originalBrowser;
   }
 
+  const originalFetchV2 = global.fetchv2;
+  let nativeCalls = 0;
+  global.fetchv2 = async (url, requestHeaders, method) => {
+    nativeCalls++;
+    assert.strictEqual(method, "GET");
+    if (String(url).includes("api.themoviedb.org/3/movie/27205")) {
+      return { ok: true, json: async () => ({ title: "Inception", release_date: "2010-07-16" }) };
+    }
+    if (String(url).startsWith("https://bingebox.ac/api/sources?")) {
+      return {
+        ok: true,
+        json: async () => ({
+          success: true,
+          sources: [{ label: "native-cdn", stream: { url: "https://cdn.example/native.mp4", captions: [] } }]
+        })
+      };
+    }
+    throw new Error("Unexpected fetchv2 URL: " + url);
+  };
+  try {
+    const nativeStreams = await getStreams("27205", "movie");
+    assert.strictEqual(nativeCalls, 2, "TMDB metadata and BingeBox sources should use fetchv2");
+    assert.strictEqual(nativeStreams.length, 1);
+    assert.strictEqual(nativeStreams[0].name, "BingeBox - native-cdn");
+  } finally {
+    if (originalFetchV2 === undefined) delete global.fetchv2;
+    else global.fetchv2 = originalFetchV2;
+  }
+
   const { route } = require("./src/stremio/router");
   const manifestRes = await route("/manifest.json", {}, "http://localhost");
   const manifest = JSON.parse(manifestRes.body);
   assert(manifest.scrapers.some((item) => item.id === "bingebox"), "BingeBox must be registered in the scraper manifest");
   const invalidStreamRes = await route("/stream/movie/not-an-id.json", {}, "http://localhost");
   assert.deepEqual(JSON.parse(invalidStreamRes.body).streams, []);
-  console.log("BingeBox browser-session, provider, and router offline checks passed.");
+  console.log("BingeBox browser-session, native-fetch, provider, and router offline checks passed.");
 })().catch((err) => {
   console.error(err);
   process.exit(1);
