@@ -5,6 +5,7 @@
  * HTTP/HLS streams. This provider is isolated from Cinejoy and 7Movies.
  */
 const { fetchWithTimeout, withTimeout, TtlCache } = require("../shared/provider-utils");
+const { getStreams: getBingeBangStreams } = require("./bingebang");
 
 const BASE_URL = (typeof process !== "undefined" && process.env && process.env.BINGEBOX_BASE_URL)
   ? process.env.BINGEBOX_BASE_URL.replace(/\/+$/, "")
@@ -141,6 +142,16 @@ async function getStreams(tmdbId, type, season, episode) {
   if (isTv && (!Number.isInteger(s) || s < 1 || !Number.isInteger(e) || e < 1)) return [];
   try {
     const meta = await getMetadata(id, isTv ? "tv" : "movie");
+
+    // Prefer the independent FMHY BingeBang extractor (search -> player ticket ->
+    // encrypted server list -> per-server resolve). Keep the old BingeBox API as
+    // a compatibility fallback; the two services are not the same endpoint.
+    const fmhyStreams = await getBingeBangStreams(meta, isTv, s, e, fetchUpstream);
+    if (fmhyStreams.length) {
+      console.info("[BingeBang] " + fmhyStreams.length + " stream(s) for " + (isTv ? "tv" : "movie") + ":" + id);
+      return fmhyStreams;
+    }
+
     const params = new URLSearchParams({
       tmdbId: id,
       mediaType,
