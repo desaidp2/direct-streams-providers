@@ -18,8 +18,11 @@ const { getStreams } = require("./src/bingebox");
   global.challengeBrowser = {
     execute: async (url, options) => {
       browserCalls++;
-      assert(url.startsWith("https://bingebox.ac/"), "browser must load BingeBox origin");
       assert(options.reuse === true, "browser page should be reused");
+      if (url.startsWith("https://bingebang.st/") || url.startsWith("https://bingebang.tv/")) {
+        return { result: JSON.stringify({ status: 403, body: "" }), cookies: "", userAgent: "Browser Test UA" };
+      }
+      assert(url.startsWith("https://bingebox.ac/"), "browser must load BingeBox origin");
       assert(options.evaluateJs.includes("/api/sources?"), "browser must fetch unified sources API in-page");
       return {
         result: JSON.stringify({
@@ -42,7 +45,7 @@ const { getStreams } = require("./src/bingebox");
   };
   try {
     const browserStreams = await getStreams("872585", "movie");
-    assert.strictEqual(browserCalls, 1, "BingeBox should use the existing challengeBrowser session");
+    assert.strictEqual(browserCalls, 3, "BingeBang host fallbacks and BingeBox should use the existing challengeBrowser session");
     assert.strictEqual(browserStreams.length, 1);
     assert.strictEqual(browserStreams[0].url, "https://cdn.example/test.m3u8");
     assert.strictEqual(browserStreams[0].behaviorHints.proxyHeaders.request.Cookie, "session=browser-cookie");
