@@ -16,7 +16,7 @@ const MEDIA_UA = "okhttp/4.12.0";
 const REFERER = BASE_URL + "/";
 const cache = new TtlCache(100, 5 * 60 * 1000);
 const TIMEOUT_MS = 6500;
-const BROWSER_ORIGIN_PAGE = BASE_URL + "/robots.txt";
+const BROWSER_ORIGIN_PAGE = BASE_URL + "/";
 
 function headers() {
   return { "User-Agent": UA, "Referer": REFERER, "Origin": BASE_URL };
@@ -30,7 +30,7 @@ function hostChallengeBrowser() {
 
 function inPageFetchJs(path) {
   return "(async () => { const r = await fetch(" + JSON.stringify(path) +
-    ", { headers: { Accept: 'application/json' }, credentials: 'same-origin' });" +
+    ", { headers: { Accept: 'application/json' }, credentials: 'include', referrer: " + JSON.stringify(REFERER) + " });" +
     " return JSON.stringify({ status: r.status, body: await r.text() }); })()";
 }
 
