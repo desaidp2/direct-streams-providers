@@ -40,6 +40,8 @@ function stub(rel, exportsObj) {
 stub("src/movy/index.js", { getStreams: fast("movy", 3), fetchSubtitles: async () => subs });
 stub("src/7movies/index.js", { getStreams: fast("seven", 2) });
 stub("src/flystream/index.js", { getStreams: fly });
+// BingeBox is covered by its own offline test; keep this router suite fully offline.
+stub("src/bingebox/index.js", { getStreams: async () => [] });
 
 const { route, handleStreams } = require("./src/stremio/router");
 
