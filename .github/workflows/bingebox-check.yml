@@ -22,4 +22,7 @@ jobs:
       - run: npm run build
       - run: node --check providers/bingebox.js
       - run: node test-bingebox-offline.js
+      - name: BingeBox live upstream smoke test
+        run: node test-bingebox-live.js
+        continue-on-error: true
       - run: node test-router-offline.js
