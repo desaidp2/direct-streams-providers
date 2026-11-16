@@ -4,15 +4,16 @@
  */
 const { createHash } = require("node:crypto");
 
-const DEFAULT_BASE = "https://bingebang.tv";
+const DEFAULT_BASES = ["https://bingebang.st", "https://bingebang.tv"];
 const PLAYER_ENVELOPE_SEED = "9e2b7c41a0f6d85b3c1e7a94f25d0b86";
 const QUALITY_HEIGHTS = { "4K ULTRA HD": 2160, "FULL HD": 1080, "HD": 720, "SD": 480 };
 const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36";
 
-function getBaseUrl() {
-  return (typeof process !== "undefined" && process.env && process.env.BINGEBANG_BASE_URL)
-    ? process.env.BINGEBANG_BASE_URL.replace(/\\/+$/, "")
-    : DEFAULT_BASE;
+function getBaseUrls() {
+  if (typeof process !== "undefined" && process.env && process.env.BINGEBANG_BASE_URL) {
+    return [process.env.BINGEBANG_BASE_URL.replace(/\\/+$/, "")];
+  }
+  return DEFAULT_BASES;
 }
 
 function decryptEnvelope(envelope, ticket) {
@@ -48,10 +49,9 @@ async function checkedResponse(fetchUpstream, url, options, label) {
   return response;
 }
 
-async function getStreams(meta, isTv, season, episode, fetchUpstream) {
+async function getStreamsAtBase(meta, isTv, season, episode, fetchUpstream, base) {
   if (!meta || !meta.title || typeof fetchUpstream !== "function") return [];
   if (isTv && (!Number.isInteger(season) || season < 1 || !Number.isInteger(episode) || episode < 1)) return [];
-  const base = getBaseUrl();
   const origin = base + "/";
   const headers = { "User-Agent": UA, "Referer": origin, "Origin": base, "Accept": "application/json, text/html;q=0.9" };
   try {
@@ -125,6 +125,14 @@ async function getStreams(meta, isTv, season, episode, fetchUpstream) {
     console.warn("[BingeBang] FMHY extractor failed:", error && error.message || error);
     return [];
   }
+}
+
+async function getStreams(meta, isTv, season, episode, fetchUpstream) {
+  for (const base of getBaseUrls()) {
+    const streams = await getStreamsAtBase(meta, isTv, season, episode, fetchUpstream, base);
+    if (streams.length) return streams;
+  }
+  return [];
 }
 
 module.exports = { getStreams, decryptEnvelope, readPlayerConfiguration };
