@@ -31,4 +31,9 @@ jobs:
       - name: BingeBox live upstream smoke test
         run: node test-bingebox-live.js
         continue-on-error: true
+      - name: PopcornMovies alternate origin smoke test
+        run: node test-bingebox-live.js
+        env:
+          BINGEBOX_BASE_URL: https://popcornmovies.st
+        continue-on-error: true
       - run: node test-router-offline.js
