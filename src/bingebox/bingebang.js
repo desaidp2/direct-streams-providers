@@ -96,6 +96,11 @@ async function getStreamsAtBase(meta, isTv, season, episode, fetchUpstream, base
 
     const streams = [];
     const seen = new Set();
+    const playbackHeaders = {
+      "User-Agent": sourceResponse.userAgent || UA,
+      Referer: origin
+    };
+    if (sourceResponse.cookies) playbackHeaders.Cookie = sourceResponse.cookies;
     for (const server of serverList.servers.slice(0, 9)) {
       if (!server || typeof server.source_url !== "string" || !server.source_url) continue;
       const resolveUrl = new URL("/api/player/resolve", base);
@@ -109,7 +114,6 @@ async function getStreamsAtBase(meta, isTv, season, episode, fetchUpstream, base
       seen.add(resolved.url);
       const quality = String(server.quality || "").toUpperCase();
       const height = QUALITY_HEIGHTS[quality];
-      const playbackHeaders = { "User-Agent": UA, Referer: origin };
       streams.push({
         name: "BingeBang - " + String(server.label || "Server"),
         title: (isTv ? "S" + String(season).padStart(2, "0") + "E" + String(episode).padStart(2, "0") : "Movie") + " - " + (quality || "Auto"),
