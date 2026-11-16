@@ -68,6 +68,42 @@ function inPageFetchJs(path) {
     " return JSON.stringify({ status: r.status, body: await r.text() }); })()";
 }
 
+async function fetchBingeBangUpstream(url, init, label) {
+  const cb = hostChallengeBrowser();
+  if (cb) {
+    try {
+      const target = new URL(url);
+      const requestHeaders = Object.assign({}, (init && init.headers) || {});
+      delete requestHeaders.Origin;
+      delete requestHeaders.origin;
+      const script = "(async () => { const r = await fetch(" + JSON.stringify(target.toString()) +
+        ", { method: " + JSON.stringify((init && init.method) || "GET") +
+        ", headers: " + JSON.stringify(requestHeaders) +
+        ", body: " + JSON.stringify((init && init.body) || null) +
+        ", credentials: 'include', redirect: 'follow' });" +
+        " return JSON.stringify({ status: r.status, body: await r.text() }); })()";
+      const result = await cb.execute(target.origin + "/", {
+        reuse: true,
+        evaluateJs: script,
+        timeoutMs: TIMEOUT_MS
+      });
+      const payload = JSON.parse(String((result && result.result) || ""));
+      const body = String(payload.body || "");
+      return {
+        ok: payload.status >= 200 && payload.status < 300,
+        status: payload.status,
+        cookies: result.cookies || (typeof cb.getCookies === "function" ? await cb.getCookies(target.origin) : ""),
+        userAgent: result.userAgent || (typeof cb.getUserAgent === "function" ? await cb.getUserAgent() : UA),
+        text: async () => body,
+        json: async () => JSON.parse(body)
+      };
+    } catch (err) {
+      console.warn("[BingeBang] Browser transport failed, trying native fetch:", err && err.message || err);
+    }
+  }
+  return fetchUpstream(url, init, label || "BingeBang fetch");
+}
+
 async function fetchSources(apiUrl) {
   const cb = hostChallengeBrowser();
   if (cb) {
@@ -146,7 +182,7 @@ async function getStreams(tmdbId, type, season, episode) {
     // Prefer the independent FMHY BingeBang extractor (search -> player ticket ->
     // encrypted server list -> per-server resolve). Keep the old BingeBox API as
     // a compatibility fallback; the two services are not the same endpoint.
-    const fmhyStreams = await getBingeBangStreams(meta, isTv, s, e, fetchUpstream);
+    const fmhyStreams = await getBingeBangStreams(meta, isTv, s, e, fetchBingeBangUpstream);
     if (fmhyStreams.length) {
       console.info("[BingeBang] " + fmhyStreams.length + " stream(s) for " + (isTv ? "tv" : "movie") + ":" + id);
       return fmhyStreams;
