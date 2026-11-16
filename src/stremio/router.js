@@ -18,6 +18,7 @@ const { getStreams: getCinejoyStreams } = require("../cinejoy/index");
 const { getStreams: get7MoviesStreams } = require("../7movies/index");
 const { getStreams: getMovyStreams } = require("../movy/index");
 const { getStreams: getFlyStreamStreams } = require("../flystream/index");
+const { getStreams: getBingeBoxStreams } = require("../bingebox/index");
 const { CORS_HEADERS } = require("./http-constants");
 const { handleSubtitleProxy } = require("./subtitle-proxy");
 const { companionAllowed } = require("./client-address-private-network-check");
@@ -82,8 +83,8 @@ function injectCompanionUrl(code, url) {
 const MANIFEST = {
   id: "community.directstreamsproviders",
   version: "1.0.14",
-  name: "Cinejoy + 7Movies Direct Streams",
-  description: "Direct HTTP streams from Cinejoy, 7Movies, Movy and FlyStream. No P2P or torrents.",
+  name: "Cinejoy + 7Movies + BingeBox Direct Streams",
+  description: "Direct HTTP streams from Cinejoy, 7Movies, BingeBox, Movy and FlyStream. No P2P or torrents.",
   resources: ["stream", "subtitles"],
   types: ["movie", "series"],
   idPrefixes: ["tt", "tmdb:"],
@@ -101,6 +102,7 @@ const PROVIDERS = [
   { tag: "7Movies", getStreams: get7MoviesStreams, deadlineMs: 18000 },
   { tag: "Movy", getStreams: getMovyStreams, deadlineMs: 9000 },
   { tag: "FlyStream", getStreams: getFlyStreamStreams, deadlineMs: 8000 },
+  { tag: "BingeBox", getStreams: getBingeBoxStreams, deadlineMs: 8000 },
 ];
 
 // Each provider gets this long; a late provider is dropped from the response instead of
