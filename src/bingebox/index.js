@@ -25,17 +25,34 @@ function headers() {
 // Nuvio/Sora-like hosts may expose fetchv2, which performs native HTTP requests
 // outside browser CORS restrictions. Prefer it when available, matching the
 // upstream BingeBox module's transport behavior.
+// Sora/Nuvio builds differ: fetchv2 may return a Response, a raw body string,
+// or reject on non-2xx. Match the upstream module's fallback and normalize raw bodies.
+function normalizeUpstreamResponse(response) {
+  if (response && typeof response.json === "function" && typeof response.text === "function") return response;
+  const body = typeof response === "string" ? response : (response == null ? "" : String(response));
+  return {
+    ok: true,
+    status: 200,
+    text: async () => body,
+    json: async () => JSON.parse(body)
+  };
+}
+
 async function fetchUpstream(url, init, label) {
+  const opts = init || {};
   if (typeof fetchv2 === "function") {
-    const opts = init || {};
-    const response = await withTimeout(
-      fetchv2(url, opts.headers || {}, opts.method || "GET", opts.body || null),
-      TIMEOUT_MS,
-      label || "BingeBox native fetch"
-    );
-    return response;
+    try {
+      const nativeResponse = await withTimeout(
+        fetchv2(url, opts.headers || {}, opts.method || "GET", opts.body || null),
+        TIMEOUT_MS,
+        label || "BingeBox native fetch"
+      );
+      if (nativeResponse != null) return normalizeUpstreamResponse(nativeResponse);
+    } catch (err) {
+      console.warn("[BingeBox] fetchv2 failed; trying fetch:", err && err.message || err);
+    }
   }
-  return fetchWithTimeout(url, init, TIMEOUT_MS, label || "BingeBox fetch");
+  return fetchWithTimeout(url, opts, TIMEOUT_MS, label || "BingeBox fetch");
 }
 
 function hostChallengeBrowser() {
