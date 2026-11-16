@@ -27,6 +27,6 @@ The port uses the original FMHY player-envelope algorithm, validates movie/episo
 
 ## Verification and safety
 
-Offline adapter tests do not prove that BingeBang is currently reachable from the deployed host. Earlier live checks of the separate BingeBox `/api/sources` endpoint returned HTTP 403; that does not by itself prove the independent BingeBang player flow is blocked. The new BingeBang live result must be read from the current CI run before claiming live playback works.
+Offline adapter tests do not prove that BingeBang is currently reachable from the deployed host. Earlier live checks of the separate BingeBox `/api/sources` endpoint returned HTTP 403; that does not by itself prove the independent BingeBang player flow is blocked. The 2026-11-16 CI smoke checks reached the official `.sx` domain, but both the browser in-page fetch and direct fetch failed (`TypeError: Failed to fetch`); the provider returned 0 streams. The older BingeBox `/api/sources` path also returned HTTP 403. Offline tests pass, but live playback is not verified from the hosted runner. No challenge bypass or proxy is included.
 
 This work stays on the isolated `add-popcornmovies-bingebox` branch. CineJoy and 7Movies provider code and the production Render service are not changed or deployed.
