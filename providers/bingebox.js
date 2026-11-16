@@ -5,15 +5,27 @@
  * HTTP/HLS streams. This provider is isolated from Cinejoy and 7Movies.
  */
 // Inlined from src/shared/provider-utils.js for standalone Nuvio loading.
+function withTimeout(promise, ms, label) {
+  if (typeof setTimeout !== "function") return promise;
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error((label || "Timeout") + " " + ms + "ms")), ms);
+  });
+  return Promise.race([promise, timeout]).then(
+    value => { if (typeof clearTimeout === "function") clearTimeout(timer); return value; },
+    err => { if (typeof clearTimeout === "function") clearTimeout(timer); throw err; }
+  );
+}
 function fetchWithTimeout(url, init, ms, label) {
   if (typeof AbortController !== "function" || typeof setTimeout !== "function") {
-    return Promise.race([fetch(url, init), new Promise((_, reject) => setTimeout(() => reject(new Error((label || "Timeout") + " " + ms + "ms")), ms))]);
+    return withTimeout(fetch(url, init), ms, label);
   }
   const controller = new AbortController();
   const opts = Object.assign({}, init || {}, { signal: controller.signal });
-  let timer;
-  const timeout = new Promise((_, reject) => { timer = setTimeout(() => reject(new Error((label || "Timeout") + " " + ms + "ms")), ms); });
-  return Promise.race([fetch(url, opts), timeout]).then(value => { clearTimeout(timer); return value; }, err => { clearTimeout(timer); controller.abort(); throw err; });
+  return withTimeout(fetch(url, opts), ms, label).catch(err => {
+    controller.abort();
+    throw err;
+  });
 }
 class TtlCache {
   constructor(limit, defaultTtlMs) { this.limit = limit; this.defaultTtlMs = defaultTtlMs; this.map = new Map(); }
@@ -31,8 +43,6 @@ class TtlCache {
   delete(key) { this.map.delete(key); }
   get size() { return this.map.size; }
 }
-
-
 const BASE_URL = (typeof process !== "undefined" && process.env && process.env.BINGEBOX_BASE_URL)
   ? process.env.BINGEBOX_BASE_URL.replace(/\/+$/, "")
   : "https://bingebox.ac";
