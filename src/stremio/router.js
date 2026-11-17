@@ -190,12 +190,12 @@ function streamQualityRank(stream) {
   ].filter(Boolean).join(" ").toLowerCase();
 
   // Explicit resolution wins over codec/release labels (e.g. a 1080p REMUX stays in 1080p).
-  if (/\\b(?:2160p?|4k|uhd)\\b/i.test(text)) return 5;
-  if (/\\b(?:1440p?|2k)\\b/i.test(text)) return 4;
-  if (/\\b1080p?\\b/i.test(text)) return 3;
-  if (/\\b720p?\\b/i.test(text)) return 2;
-  if (/\\b(?:480p?|360p?|240p?)\\b/i.test(text)) return 1;
-  if (/\\bremux\\b/i.test(text)) return 5;
+  if (/\b(?:2160p?|4k|uhd)\b/i.test(text)) return 5;
+  if (/\b(?:1440p?|2k)\b/i.test(text)) return 4;
+  if (/\b1080p?\b/i.test(text)) return 3;
+  if (/\b720p?\b/i.test(text)) return 2;
+  if (/\b(?:480p?|360p?|240p?)\b/i.test(text)) return 1;
+  if (/\bremux\b/i.test(text)) return 5;
   return 0;
 }
 
