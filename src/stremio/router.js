@@ -179,6 +179,26 @@ function mapSubtitles(rawSubs, baseUrl) {
  * response) maps each distinct array once, so S streams x T subtitles cost O(S + T)
  * instead of O(S x T) mapping work and allocations.
  */
+function streamQualityRank(stream) {
+  const hints = stream && stream.behaviorHints;
+  const text = [
+    stream && stream.quality,
+    stream && stream.resolution,
+    stream && stream.name,
+    stream && stream.title,
+    hints && hints.filename,
+  ].filter(Boolean).join(" ").toLowerCase();
+
+  // Explicit resolution wins over codec/release labels (e.g. a 1080p REMUX stays in 1080p).
+  if (/\\b(?:2160p?|4k|uhd)\\b/i.test(text)) return 5;
+  if (/\\b(?:1440p?|2k)\\b/i.test(text)) return 4;
+  if (/\\b1080p?\\b/i.test(text)) return 3;
+  if (/\\b720p?\\b/i.test(text)) return 2;
+  if (/\\b(?:480p?|360p?|240p?)\\b/i.test(text)) return 1;
+  if (/\\bremux\\b/i.test(text)) return 5;
+  return 0;
+}
+
 function toStremioStream(s, providerTag, baseUrl, subMemo) {
   let subtitles = [];
   if (Array.isArray(s.subtitles)) {
@@ -238,17 +258,23 @@ async function resolveStreams(type, rawId, baseUrl) {
     for (let i = 0; i < PROVIDERS.length; i++) {
       console.info(`[StremioRouter] ${PROVIDERS[i].tag} returned ${Array.isArray(results[i]) ? results[i].length : 0} stream(s) for ${normType}:${tmdbId}:${season || ""}:${episode || ""}`);
     }
-    const streams = [];
+    const rankedStreams = [];
     const subMemo = new Map();
     for (let i = 0; i < PROVIDERS.length; i++) {
       const list = results[i];
       if (!Array.isArray(list)) continue;
       for (const s of list) {
-        streams.push(toStremioStream(s, PROVIDERS[i].tag, baseUrl, subMemo));
+        rankedStreams.push({
+          stream: toStremioStream(s, PROVIDERS[i].tag, baseUrl, subMemo),
+          rank: streamQualityRank(s),
+        });
       }
     }
 
-    return { streams };
+    // Stable sort: 4K → 1440p → 1080p → 720p → lower/unknown.
+    // Equal-quality streams keep their existing provider order.
+    rankedStreams.sort((a, b) => b.rank - a.rank);
+    return { streams: rankedStreams.map((entry) => entry.stream) };
   } catch (err) {
     console.error("[StremioRouter] Error resolving streams:", err);
     return { streams: [] };
