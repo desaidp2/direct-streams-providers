@@ -12,7 +12,7 @@ const openMovies = {
     year: "2008",
     poster: "https://peach.blender.org/wp-content/uploads/title_anouncement.jpg",
     description: "A Blender Foundation open movie. Licensed under Creative Commons Attribution 3.0. Attribution: © copyright 2008, Blender Foundation / www.bigbuckbunny.org",
-    url: "https://storage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4"
+    url: "https://archive.org/download/BigBuckBunny_124/Content/big_buck_bunny_720p_surround.mp4"
   }
 };
 const manifest = {
