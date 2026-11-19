@@ -1,7 +1,7 @@
 {
   "name": "direct-streams-providers",
   "version": "1.1.0",
-  "description": "Stremio direct HTTP streams (Cinejoy, 7Movies, Movy, FlyStream)",
+  "description": "Stremio direct HTTP streams (Cinejoy, VixSrc, 7Movies, Movy, FlyStream)",
   "scripts": {
     "build": "node build.js",
     "serve": "node server.js",
