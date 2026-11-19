@@ -117,7 +117,7 @@ async function streams(type, id) {
 
 async function handler(req, res) {
   const url = new URL(req.url, `http://${req.headers.host || "localhost"}`);
-  const pathname = url.pathname.replace(/^\\/api(?=\\/)/, "") || "/";
+  const pathname = url.pathname.startsWith("/api/") ? url.pathname.slice(4) : url.pathname;
   const parts = pathname.split("/").filter(Boolean);
   try {
     if (pathname === "/health" || pathname === "/healthz") return json(res, 200, { ok: true });
