@@ -16,11 +16,11 @@ function validId(value) {
   return Number.isSafeInteger(id) && id > 0 ? id : null;
 }
 
-async function request(url, referer) {
+async function requestPage(url, referer) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
   try {
-    return await fetch(url, {
+    const response = await fetch(url, {
       signal: controller.signal,
       headers: {
         "User-Agent": UA,
@@ -29,6 +29,8 @@ async function request(url, referer) {
         "Origin": ORIGIN,
       },
     });
+    const body = await response.text();
+    return { ok: response.ok, status: response.status, body };
   } finally {
     clearTimeout(timer);
   }
@@ -59,14 +61,14 @@ async function getStreams(tmdbId, type, season, episode) {
     : `${ORIGIN}/movie/${id}/`;
 
   try {
-    const response = await request(targetUrl, ORIGIN + "/");
-    if (!response.ok) throw new Error(`VixSrc page HTTP ${response.status}`);
-    const html = await response.text();
+    const page = await requestPage(targetUrl, ORIGIN + "/");
+    if (!page.ok) throw new Error(`VixSrc page HTTP ${page.status}`);
+    const html = page.body;
     const player = extractPlayerData(html);
     if (!player) throw new Error("VixSrc player token was not found");
 
     const separator = player.serverUrl.includes("?") ? "&" : "?";
-    // VixSrc's original extractor uses h=1 to request its highest supported rendition.
+    // The upstream extractor uses h=1 (commonly capped at 1080p); this is not a 4K guarantee.
     const streamUrl = `${player.serverUrl}${separator}token=${encodeURIComponent(player.token)}&expires=${encodeURIComponent(player.expires)}&h=1`;
     if (!/^https?:\/\//i.test(streamUrl)) throw new Error("VixSrc returned an invalid stream URL");
 
