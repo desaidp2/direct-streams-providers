@@ -82,8 +82,8 @@ function injectCompanionUrl(code, url) {
 
 const MANIFEST = {
   id: "community.directstreamsproviders",
-  version: "1.0.14",
-  name: "Cinejoy + 7Movies Direct Streams",
+  version: "1.0.15",
+  name: "Cinejoy + VixSrc Direct Streams",
   description: "Direct HTTP streams from Cinejoy, VixSrc, 7Movies, Movy and FlyStream. No P2P or torrents.",
   resources: ["stream", "subtitles"],
   types: ["movie", "series"],
