@@ -1,6 +1,6 @@
 # Direct Streams Providers
 
-[![Version](https://img.shields.io/badge/version-1.0.14-blue.svg)](manifest.json)
+[![Version](https://img.shields.io/badge/version-1.0.15-blue.svg)](manifest.json)
 [![Platform](https://img.shields.io/badge/platform-Nuvio%20%7C%20WuPlay%20%7C%20Stremio-green.svg)](https://nuvioapp.space)
 [![Playback Verified](https://img.shields.io/badge/playback-verified%20live%20✅-brightgreen.svg)](docs/assets/movy_playback_osd.png)
 
