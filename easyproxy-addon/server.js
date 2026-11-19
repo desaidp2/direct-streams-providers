@@ -129,12 +129,12 @@ async function handler(req, res) {
     }
     if (parts[0] === "meta" && parts.length >= 3) {
       const type = parts[1] === "series" ? "series" : "movie";
-      const id = decodeURIComponent(parts[2]).replace(/^tmdb:(movie|series):/, "");
+      const id = decodeURIComponent(parts[2]).replace(/\\.json$/, "").replace(/^tmdb:(movie|series):/, "");
       return json(res, 200, { meta: await meta(type, id) });
     }
     if (parts[0] === "stream" && parts.length >= 3) {
       const type = parts[1] === "series" ? "series" : "movie";
-      return json(res, 200, { streams: await streams(type, decodeURIComponent(parts[2])) });
+      return json(res, 200, { streams: await streams(type, decodeURIComponent(parts[2]).replace(/\\.json$/, "")) });
     }
     return json(res, 404, { error: "Not found" });
   } catch (error) {
