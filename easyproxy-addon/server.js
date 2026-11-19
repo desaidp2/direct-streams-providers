@@ -154,7 +154,7 @@ async function handler(req, res) {
     if (parts[0] === "catalog" && parts.length >= 3) {
       const type = parts[1] === "series" ? "series" : "movie";
       const search = url.searchParams.get("search") || (parts[3]?.startsWith("search=") ? cleanId(parts[3].slice(7)) : "");
-      return json(res, 200, { metas: await catalog(type, search, parts[2]) });
+      return json(res, 200, { metas: await catalog(type, search, cleanId(parts[2])) });
     }
     if (parts[0] === "meta" && parts.length >= 3) {
       const type = parts[1] === "series" ? "series" : "movie";
