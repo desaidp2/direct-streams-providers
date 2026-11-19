@@ -117,13 +117,14 @@ async function streams(type, id) {
 
 async function handler(req, res) {
   const url = new URL(req.url, `http://${req.headers.host || "localhost"}`);
-  const parts = url.pathname.split("/").filter(Boolean);
+  const pathname = url.pathname.replace(/^\\/api(?=\\/)/, "") || "/";
+  const parts = pathname.split("/").filter(Boolean);
   try {
-    if (url.pathname === "/health" || url.pathname === "/healthz") return json(res, 200, { ok: true });
-    if (url.pathname === "/manifest.json") return json(res, 200, manifest);
+    if (pathname === "/health" || pathname === "/healthz") return json(res, 200, { ok: true });
+    if (pathname === "/manifest.json") return json(res, 200, manifest);
     if (parts[0] === "catalog" && parts.length >= 3) {
       const type = parts[1] === "series" ? "series" : "movie";
-      const search = url.searchParams.get("search") || "";
+      const search = url.searchParams.get("search") || (parts[3]?.startsWith("search=") ? decodeURIComponent(parts[3].slice(7).replace(/\\.json$/, "")) : "");
       return json(res, 200, { metas: await catalog(type, search) });
     }
     if (parts[0] === "meta" && parts.length >= 3) {
