@@ -4,18 +4,30 @@ import { URL } from "node:url";
 const PORT = Number(process.env.PORT || 7000);
 const TMDB_BASE = "https://api.themoviedb.org/3";
 const ADDON_ID = "community.easyproxy.tmdb";
+const openMovies = {
+  "open:bigbuckbunny": {
+    id: "open:bigbuckbunny",
+    type: "movie",
+    name: "Big Buck Bunny (CC BY 3.0)",
+    year: "2008",
+    poster: "https://peach.blender.org/wp-content/uploads/title_anouncement.jpg",
+    description: "A Blender Foundation open movie. Licensed under Creative Commons Attribution 3.0. Attribution: © copyright 2008, Blender Foundation / www.bigbuckbunny.org",
+    url: "https://storage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4"
+  }
+};
 const manifest = {
   id: ADDON_ID,
-  version: "0.1.0",
+  version: "0.2.0",
   name: "TMDB + EasyProxy (authorized sources)",
-  description: "TMDB movie and series catalogs with optional authorized source discovery and EasyProxy resolution.",
+  description: "TMDB catalogs plus a playable, openly licensed movie test and optional authorized source discovery.",
   resources: ["catalog", "meta", "stream"],
   types: ["movie", "series"],
   catalogs: [
     { type: "movie", id: "tmdb-movies", name: "TMDB Movies", extra: [{ name: "search", isRequired: false }] },
-    { type: "series", id: "tmdb-series", name: "TMDB Series", extra: [{ name: "search", isRequired: false }] }
+    { type: "series", id: "tmdb-series", name: "TMDB Series", extra: [{ name: "search", isRequired: false }] },
+    { type: "movie", id: "open-movies", name: "Open Licensed Movies" }
   ],
-  idPrefixes: ["tmdb:"]
+  idPrefixes: ["tmdb:", "open:"]
 };
 
 const json = (res, status, body) => {
@@ -50,7 +62,8 @@ function toMeta(item, type) {
   };
 }
 
-async function catalog(type, search) {
+async function catalog(type, search, catalogId) {
+  if (catalogId === "open-movies") return Object.values(openMovies).map(({ url, ...item }) => item);
   const kind = type === "movie" ? "movie" : "tv";
   const path = search
     ? `/search/${kind}?query=${encodeURIComponent(search)}&include_adult=false`
@@ -60,12 +73,26 @@ async function catalog(type, search) {
 }
 
 async function meta(type, id) {
-  const kind = type === "movie" ? "movie" : "tv";
-  const item = await tmdb(`/${kind}/${encodeURIComponent(id)}`);
-  return toMeta(item, type);
+  if (openMovies[id]) {
+    const { url, ...item } = openMovies[id];
+    return item;
+  }
+  const match = /^tmdb:(movie|series):(\d+)$/.exec(id);
+  const kind = match ? (match[1] === "movie" ? "movie" : "tv") : (type === "movie" ? "movie" : "tv");
+  const numericId = match ? match[2] : id;
+  const item = await tmdb(`/${kind}/${encodeURIComponent(numericId)}`);
+  return toMeta(item, kind === "movie" ? "movie" : "series");
 }
 
 async function streams(type, id) {
+  if (openMovies[id]) {
+    const item = openMovies[id];
+    return [{
+      name: "Blender Foundation open movie · CC BY 3.0",
+      title: "Big Buck Bunny · 1080p test stream",
+      url: item.url
+    }];
+  }
   const match = /^tmdb:(movie|series):(\d+)(?::(\d+):(\d+))?$/.exec(id);
   if (!match) return [];
   const tmdbType = match[1] === "movie" ? "movie" : "tv";
@@ -73,8 +100,7 @@ async function streams(type, id) {
   const season = match[3];
   const episode = match[4];
 
-  // Source discovery is deliberately a separate, user-configured service.
-  // It must return only sources the operator is authorized to distribute.
+  // Discovery must be a user-configured service authorized to distribute its sources.
   const discoveryUrl = process.env.SOURCE_DISCOVERY_URL;
   const easyProxyUrl = process.env.EASYPROXY_URL;
   if (!discoveryUrl || !easyProxyUrl) return [];
@@ -96,7 +122,6 @@ async function streams(type, id) {
 
   const resolved = await Promise.all(sources.slice(0, 8).map(async source => {
     if (!source?.url || !/^https?:\/\//i.test(source.url)) return null;
-    // The discovery service is the trust boundary: only return authorized source URLs.
     const resolver = new URL("/extractor/video", easyProxyUrl);
     resolver.searchParams.set("d", source.url);
     resolver.searchParams.set("redirect_stream", "true");
@@ -115,6 +140,10 @@ async function streams(type, id) {
   return resolved.filter(Boolean);
 }
 
+function cleanId(value) {
+  return decodeURIComponent(value).replace(/\.json$/, "");
+}
+
 async function handler(req, res) {
   const url = new URL(req.url, `http://${req.headers.host || "localhost"}`);
   const pathname = url.pathname.startsWith("/api/") ? url.pathname.slice(4) : url.pathname;
@@ -124,17 +153,16 @@ async function handler(req, res) {
     if (pathname === "/manifest.json") return json(res, 200, manifest);
     if (parts[0] === "catalog" && parts.length >= 3) {
       const type = parts[1] === "series" ? "series" : "movie";
-      const search = url.searchParams.get("search") || (parts[3]?.startsWith("search=") ? decodeURIComponent(parts[3].slice(7).replace(/\\.json$/, "")) : "");
-      return json(res, 200, { metas: await catalog(type, search) });
+      const search = url.searchParams.get("search") || (parts[3]?.startsWith("search=") ? cleanId(parts[3].slice(7)) : "");
+      return json(res, 200, { metas: await catalog(type, search, parts[2]) });
     }
     if (parts[0] === "meta" && parts.length >= 3) {
       const type = parts[1] === "series" ? "series" : "movie";
-      const id = decodeURIComponent(parts[2]).replace(/\\.json$/, "").replace(/^tmdb:(movie|series):/, "");
-      return json(res, 200, { meta: await meta(type, id) });
+      return json(res, 200, { meta: await meta(type, cleanId(parts[2])) });
     }
     if (parts[0] === "stream" && parts.length >= 3) {
       const type = parts[1] === "series" ? "series" : "movie";
-      return json(res, 200, { streams: await streams(type, decodeURIComponent(parts[2]).replace(/\\.json$/, "")) });
+      return json(res, 200, { streams: await streams(type, cleanId(parts[2])) });
     }
     return json(res, 404, { error: "Not found" });
   } catch (error) {
@@ -142,9 +170,7 @@ async function handler(req, res) {
   }
 }
 
-if (process.env.VERCEL) {
-  // Vercel Node function entrypoint is provided by api/[...path].js.
-} else {
+if (!process.env.VERCEL) {
   http.createServer(handler).listen(PORT, "0.0.0.0", () => {
     console.log(`TMDB Stremio add-on listening on ${PORT}`);
   });
