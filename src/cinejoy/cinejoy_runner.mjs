@@ -115,7 +115,8 @@ let wasmExports = null;
 async function getWasm() {
   if (wasmExports) return wasmExports;
   const res = await fetchImpl(WASM_URL, fetchOptions({
-    headers: { "User-Agent": UA, Referer: `${BASE_URL}/` }
+    headers: { "User-Agent": UA, Referer: `${BASE_URL}/` },
+    signal: AbortSignal.timeout(5000),
   }));
   if (!res.ok) throw new Error(`WASM fetch failed HTTP ${res.status}`);
   const bytes = await res.arrayBuffer();
@@ -210,6 +211,8 @@ async function encryptedRequest(path, payload) {
       "Content-Type": "text/plain;charset=UTF-8",
     },
     body: request.body,
+    // A stalled gateway must not block all remaining Cinejoy servers.
+    signal: AbortSignal.timeout(3500),
   }));
   const responseBytes = new Uint8Array(await res.arrayBuffer());
   if (!res.ok) throw new Error(`Cinejoy gateway HTTP ${res.status}`);
