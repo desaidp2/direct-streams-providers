@@ -95,8 +95,9 @@ function isTimeout(result) {
   return result.status === "rejected" && /timeout/i.test(String((result.reason && result.reason.message) || ""));
 }
 
-function httpError(what, status) {
-  const err = new Error(what + " HTTP " + status);
+function httpError(what, status, detail) {
+  const suffix = detail ? " - " + String(detail).replace(/\\s+/g, " ").slice(0, 240) : "";
+  const err = new Error(what + " HTTP " + status + suffix);
   err.status = status;
   return err;
 }
@@ -114,7 +115,12 @@ function getSeed(mediaId, timeoutMs) {
         fetch(API + "/seed?mediaId=" + encodeURIComponent(mediaId), { headers: API_HEADERS }),
         timeoutMs || REQUEST_TIMEOUT_MS
       );
-      if (!res.ok) throw httpError("seed", res.status);
+      if (!res.ok) {
+        // Keep a short upstream error body in logs: status alone cannot distinguish
+        // an expired endpoint, an access rule, or an upstream/WAF response.
+        const detail = await res.text().catch(() => "");
+        throw httpError("seed", res.status, detail);
+      }
       const data = await res.json();
       // Refresh 5 s before the server-side expiry, as before.
       seedCache.set(mediaId, data.seed, Math.max(1000, (data.ttlMs || 30000) - 5000));
@@ -344,7 +350,7 @@ async function getStreams(tmdbId, mediaType, season, episode, opts) {
     try {
       await getSeed(cleanId, Math.min(requestTimeoutMs, left()));
     } catch (e) {
-      console.warn("[Movy] seed request failed:", (e && e.status ? "HTTP " + e.status + " - " : "") + ((e && e.message) || e));
+      console.warn("[Movy] seed request failed:", (e && e.message) || e);
       streamCache.set(cacheKey, [], UNCERTAIN_EMPTY_TTL_MS);
       return [];
     }
