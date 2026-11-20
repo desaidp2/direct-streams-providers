@@ -222,6 +222,7 @@ async function encryptedRequest(path, payload) {
 async function getServers() {
   const res = await fetchImpl(`${API_URL}/servers`, fetchOptions({
     headers: { "User-Agent": UA, Referer: `${BASE_URL}/`, Origin: BASE_URL },
+    signal: AbortSignal.timeout(3500),
   }));
   if (!res.ok) throw new Error(`Cinejoy servers HTTP ${res.status}`);
   const payload = await res.json();
