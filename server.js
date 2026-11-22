@@ -14,6 +14,7 @@
 const fs = require("fs");
 const path = require("path");
 const http = require("http");
+const { execFileSync } = require("child_process");
 
 // Load .env file if present (zero external dependencies)
 function loadEnv() {
@@ -67,6 +68,16 @@ const enableBrowser =
 
 if (enableBrowser) {
   try {
+    // Render builds and runs services in separate containers: browser binaries downloaded
+    // during npm install are not present at runtime. Install the full Chromium here, where
+    // the persistent runtime cache is available, before the challenge host resolves its path.
+    if (process.env.CHALLENGE_BROWSER === "patchright") {
+      const patchrightCli = path.join(__dirname, "node_modules", "patchright", "cli.js");
+      if (!fs.existsSync(patchrightCli)) throw new Error("Patchright CLI not found at " + patchrightCli);
+      console.log("[ChallengeBrowser] ensuring full Chromium is installed in runtime container");
+      execFileSync(process.execPath, [patchrightCli, "install", "chromium", "--no-shell"], { stdio: "inherit" });
+    }
+
     const browserHost = require("./src/host/chromium-challenge-browser");
     global.challengeBrowser = browserHost;
     // Warm the site (passes its bot check), then open the kept tab the API calls run in, so the
