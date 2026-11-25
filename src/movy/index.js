@@ -320,7 +320,7 @@ async function getStreams(tmdbId, mediaType, season, episode, opts) {
   try {
     if (!tmdbId) return [];
     const cleanId = String(tmdbId).trim();
-    if (!/^\\d+$/.test(cleanId)) return [];
+    if (!/^\d+$/.test(cleanId)) return [];
 
     const type = mediaType === "tv" ? "tv" : "movie";
     const s = type === "tv" ? Math.max(1, parseInt(season, 10) || 1) : null;
@@ -354,7 +354,7 @@ async function getStreams(tmdbId, mediaType, season, episode, opts) {
     if (!sourcesRes.ok) throw httpError("sources", sourcesRes.status);
     const payload = JSON.parse(decryptSources(await sourcesRes.text(), seedData.seed, cleanId));
     const playlist = String(payload && payload.playlist || "").trim();
-    if (!/^https:\\/\\//i.test(playlist)) return [];
+    if (!/^https:\/\//i.test(playlist)) return [];
 
     const subtitles = Array.isArray(payload.subtitles)
       ? payload.subtitles.filter((sub) => sub && (sub.url || sub.file)).slice(0, 80).map((sub) => ({
