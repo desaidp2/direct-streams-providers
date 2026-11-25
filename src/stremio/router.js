@@ -107,7 +107,8 @@ const PROVIDERS = [
 // holding it open. Response time is bounded by max(deadline), not by the slowest upstream.
 const envDeadline =
   typeof process !== "undefined" && process.env ? parseInt(process.env.PROVIDER_DEADLINE_MS || "", 10) : NaN;
-const PROVIDER_DEADLINE_MS = envDeadline > 0 ? envDeadline : 9000;
+// Cinejoy may need several upstream server checks; 9s dropped it before fallback finished.
+const PROVIDER_DEADLINE_MS = envDeadline > 0 ? envDeadline : 22000;
 
 // Identical concurrent stream requests (players often fire the same one 2-3 times while the
 // sheet opens) share one resolution: k duplicates cost 1 x P provider calls, not k x P.
