@@ -320,151 +320,65 @@ async function getStreams(tmdbId, mediaType, season, episode, opts) {
   try {
     if (!tmdbId) return [];
     const cleanId = String(tmdbId).trim();
-    if (!cleanId) return [];
-
-    const budgetMs = (opts && opts.budgetMs) || LOOKUP_BUDGET_MS;
-    const requestTimeoutMs = (opts && opts.requestTimeoutMs) || REQUEST_TIMEOUT_MS;
-    const startedAt = Date.now();
-    const left = () => budgetMs - (Date.now() - startedAt);
+    if (!/^\\d+$/.test(cleanId)) return [];
 
     const type = mediaType === "tv" ? "tv" : "movie";
     const s = type === "tv" ? Math.max(1, parseInt(season, 10) || 1) : null;
     const ep = type === "tv" ? Math.max(1, parseInt(episode, 10) || 1) : null;
-    const cacheKey = type + ":" + cleanId + ":" + s + ":" + ep;
+    const requestTimeoutMs = (opts && opts.requestTimeoutMs) || REQUEST_TIMEOUT_MS;
 
-    // Fast-path: O(1) cache hit (an empty array is a remembered miss)
-    const cached = streamCache.get(cacheKey);
-    if (cached) return cached;
-
-    // 1. Seed and detail page in parallel. No seed (e.g. 429 rate limit) -> ask no server at all.
-    const detailPromise = fetchDetailParams(cleanId, type);
-    // Subtitle search does not depend on the servers: start it now so it runs alongside the walk
-    // (live it took up to 2.5 s; started after the walk it added that to every lookup).
-    const subsPromise = fetchSubtitles(cleanId, type, s, ep).catch(() => []);
-    try {
-      await getSeed(cleanId, Math.min(requestTimeoutMs, left()));
-    } catch (e) {
-      streamCache.set(cacheKey, [], UNCERTAIN_EMPTY_TTL_MS);
-      return [];
-    }
-    const detail = (await timeout(detailPromise, Math.max(1, Math.min(DETAIL_WAIT_MS, left()))).catch(() => ({}))) || {};
-    const params = siteParams(type, cleanId, detail, s, ep);
-
-    const streams = [];
-    const seenUrls = new Set();
-    const autoRows = [];
-    let payloadSubs = [];
-    function collectSources(data, server) {
-      if (!data) return;
-      if (Array.isArray(data.subtitles) && data.subtitles.length && !payloadSubs.length) {
-        payloadSubs = data.subtitles
-          .filter((sub) => sub && (sub.url || sub.file))
-          .map((sub) => ({
-            url: sub.url || sub.file,
-            language: sub.language || sub.lang || "und",
-            name: sub.display || sub.label || sub.language || "Subtitle",
-            headers: STREAM_HEADERS,
-          }));
-      }
-
-      // Add adaptive master playlist if available
-      if (data.playlist && !seenUrls.has(data.playlist)) {
-        seenUrls.add(data.playlist);
-        streams.push({
-          name: "Movy " + serverTitle(server) + " - Auto (Master)",
-          title:
-            (type === "tv"
-              ? "S" + String(s).padStart(2, "0") + "E" + String(ep).padStart(2, "0")
-              : "Movie") + " - Auto (up to 4K) HLS",
-          url: data.playlist,
-          quality: "Auto",
-          headers: STREAM_HEADERS,
-          behaviorHints: {
-            notWebReady: true,
-            proxyHeaders: {
-              request: STREAM_HEADERS,
-            },
-          },
-          subtitles: [],
-        });
-      }
-
-      // Add individual qualities
-      const sources = Array.isArray(data.sources) ? data.sources : [];
-      for (const src of sources) {
-        if (!src || !src.url || seenUrls.has(src.url)) continue;
-        const isAuto = /^\s*auto\s*$/i.test(String(src.quality || ""));
-        const isLangLabel = !isAuto && !/\d/.test(String(src.quality || ""));
-        const q = isAuto ? "Auto" : isLangLabel ? "Unknown" : qualityLabel(src.quality);
-        seenUrls.add(src.url);
-        streams.push({
-          name: "Movy " + serverTitle(server) + " - " + q,
-          title:
-            (type === "tv"
-              ? "S" + String(s).padStart(2, "0") + "E" + String(ep).padStart(2, "0")
-              : "Movie") +
-            " - " +
-            q +
-            (isLangLabel ? " (" + String(src.quality) + ")" : "") +
-            " HLS",
-          url: src.url,
-          quality: q,
-          headers: STREAM_HEADERS,
-          behaviorHints: {
-            notWebReady: true,
-            proxyHeaders: {
-              request: STREAM_HEADERS,
-            },
-          },
-          subtitles: [],
-        });
-        if (isAuto) autoRows.push(streams[streams.length - 1]);
-      }
-    }
-
-    // 2. Miami + Boise together, then the sliding window over the rest.
-    const state = { sawTimeout: false, rateLimited: false };
-    const noteFailure = (err) => {
-      if (err && err.status === 429) state.rateLimited = true;
-      if (/timeout/i.test(String((err && err.message) || ""))) state.sawTimeout = true;
-    };
-    const primaryResults = await Promise.allSettled(
-      PRIMARY_SERVERS.map((srv) => fetchServerSources(srv, params, cleanId, Math.min(requestTimeoutMs, left())))
+    // Match EasyProxy's Movy extractor: request the per-title seed, then
+    // decrypt the Miami /sources response and use its ready-to-play playlist.
+    const seedRes = await timeout(
+      fetch(API + "/seed?mediaId=" + encodeURIComponent(cleanId), { headers: API_HEADERS }),
+      requestTimeoutMs
     );
-    primaryResults.forEach((res, i) => {
-      if (res.status === "fulfilled" && res.value) collectSources(res.value, PRIMARY_SERVERS[i]);
-      else noteFailure(res.reason);
-    });
-    if (!streams.length && !state.rateLimited) {
-      await walkFallback(FALLBACK_SERVERS, (srv, ms) => fetchServerSources(srv, params, cleanId, ms), {
-        left, requestTimeoutMs, collect: collectSources, hasStreams: () => streams.length > 0, noteFailure, state,
-      });
-    }
-    const sawTimeout = state.sawTimeout;
-    const rateLimited = state.rateLimited;
+    if (!seedRes.ok) throw httpError("seed", seedRes.status);
+    const seedData = await seedRes.json();
+    if (!seedData || !seedData.seed) return [];
 
-    // 3. "Auto" sources are master playlists (Reno: one 1600x900 variant, shown as 900p by the
-    //    site). Read each once, bounded by the budget: one variant -> its height, several ->
-    //    "Auto (up to X)"; unreadable -> stays "Auto".
-    if (autoRows.length && left() > 200) {
-      await Promise.all(autoRows.map((row) => labelAutoRow(row, Math.min(MASTER_PEEK_MS, left()))));
+    const params = {
+      mediaType: type,
+      tmdbId: Number(cleanId),
+      enc: 2,
+      seed: seedData.seed,
+    };
+    if (type === "tv") {
+      params.seasonId = s;
+      params.episodeId = ep;
     }
+    const sourcesRes = await timeout(
+      fetch(API + "/miami/sources?" + buildQuery(params), { headers: API_HEADERS }),
+      requestTimeoutMs
+    );
+    if (!sourcesRes.ok) throw httpError("sources", sourcesRes.status);
+    const payload = JSON.parse(decryptSources(await sourcesRes.text(), seedData.seed, cleanId));
+    const playlist = String(payload && payload.playlist || "").trim();
+    if (!/^https:\\/\\//i.test(playlist)) return [];
 
-    if (!streams.length) {
-      streamCache.set(cacheKey, [], sawTimeout || rateLimited ? UNCERTAIN_EMPTY_TTL_MS : EMPTY_TTL_MS);
-      return [];
-    }
+    const subtitles = Array.isArray(payload.subtitles)
+      ? payload.subtitles.filter((sub) => sub && (sub.url || sub.file)).slice(0, 80).map((sub) => ({
+          url: sub.url || sub.file,
+          language: sub.language || sub.lang || "und",
+          name: sub.display || sub.label || sub.language || "Subtitle",
+          headers: STREAM_HEADERS,
+        }))
+      : [];
 
-    // 4. Attach subtitles: prioritize embedded payload subtitles
-    let subs = payloadSubs;
-    if (!subs.length) {
-      subs = await timeout(subsPromise, Math.max(1, Math.min(2500, left()))).catch(() => []);
-    }
-    for (const st of streams) st.subtitles = subs || [];
-
-    sortByQuality(streams);
-    streamCache.set(cacheKey, streams);
-    return streams;
+    return [{
+      name: "Movy - HLS",
+      title: type === "tv"
+        ? "S" + String(s).padStart(2, "0") + "E" + String(ep).padStart(2, "0") + " - HLS"
+        : "Movie - HLS",
+      url: playlist,
+      quality: "Auto",
+      headers: STREAM_HEADERS,
+      behaviorHints: {
+        notWebReady: true,
+        proxyHeaders: { request: STREAM_HEADERS },
+      },
+      subtitles,
+    }];
   } catch (e) {
     console.error("[Movy] " + (e && e.message ? e.message : e));
     return [];
