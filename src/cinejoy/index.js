@@ -22,7 +22,7 @@ function describeError(error) {
 
 const API_URL = "https://api.wing.st";
 const WASM_URL = `${API_URL}/crush.wasm`;
-const BASE_URL = "https://cinejoy.to";
+const BASE_URL = "https://cinejoy.pk";
 const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
 
 const fetchImpl = globalThis.fetch;
