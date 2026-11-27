@@ -82,7 +82,12 @@ async function getStreams(tmdbId, type, season, episode) {
       quality: "Auto",
       headers,
       behaviorHints: { notWebReady: true, proxyHeaders: { request: headers } },
-      subtitles: [],
+      subtitles: Array.isArray(resolved.subtitles) ? resolved.subtitles.map((sub) => ({
+        url: sub.url,
+        language: sub.language || "und",
+        name: sub.display || sub.language || "subtitle",
+        headers,
+      })) : [],
     }];
   } catch (err) {
     console.warn(`[Cinejoy] No stream for ${target.type}:${id}: ` + (err && err.message ? err.message : err));
