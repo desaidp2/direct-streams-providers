@@ -146,28 +146,23 @@ async function getStreams(tmdbId, mediaType, season, episode) {
       });
     }
 
-    // Try each original-audio server until one yields a valid playlist.
-    for (const server of ORIGINAL_AUDIO_SERVERS) {
-      try {
-        const data = await fetchServerSources(server, params, id, seed);
-        collect(data, server);
-        if (collected.length) break;
-      } catch (err) {
-        if (err && err.status === 401) {
-          const refresh = await fetch(API + "/seed?mediaId=" + encodeURIComponent(id), {
-            headers: API_HEADERS, signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-          });
-          if (refresh.ok) {
-            const freshSeed = String((await refresh.json()).seed || "");
-            if (freshSeed) {
-              try {
-                const data = await fetchServerSources(server, params, id, freshSeed);
-                collect(data, server);
-                if (collected.length) break;
-              } catch (_) {}
-            }
-          }
-        }
+    // Ask several original-audio regions in parallel. A syntactically valid
+    // playlist can still be rejected by its CDN at playback time, so expose
+    // distinct regional playlists as separate Stremio choices instead of
+    // stopping at the first URL.
+    const candidates = ORIGINAL_AUDIO_SERVERS.slice(0, 5);
+    const results = await Promise.allSettled(
+      candidates.map(async (server) => ({
+        server,
+        data: await fetchServerSources(server, params, id, seed),
+      }))
+    );
+    for (const result of results) {
+      if (result.status === "fulfilled") {
+        collect(result.value.data, result.value.server);
+      } else {
+        const err = result.reason;
+        console.warn("[Movy] Region source failed: " + (err && err.message ? err.message : err));
       }
     }
     if (!collected.length) throw new Error("No original-audio Movy server returned a valid playlist");
