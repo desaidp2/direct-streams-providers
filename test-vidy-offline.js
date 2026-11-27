@@ -6,6 +6,11 @@ const assert = require("assert");
 const { keystream } = require("./src/movy/mvm1-byte-codecs");
 
 const API = "https://api.wecollege.net";
+const SERVERS = [
+  "miami", "boise", "vegas", "reno", "oakland", "seattle", "phoenix",
+  "atlanta", "portland", "austin", "dallas", "tampa", "orlando",
+  "denver", "munich", "berlin", "paris", "delhi", "cancun",
+];
 let calls;
 let sourceByServer;
 function encrypt(obj, seed, mediaId) {
@@ -38,6 +43,7 @@ async function run() {
       { quality: "720p", url: "https://cdn.example/720.m3u8" },
       { quality: "1080p", url: "https://cdn.example/1080.m3u8" },
     ], subtitles: [{ language: "English", url: "https://subs.example/en.srt" }] },
+    delhi: { playlist: "https://cdn.example/delhi.m3u8" },
   };
   let streams = await getStreams("12345", "movie");
   assert.deepStrictEqual(streams.map((s) => s.url), [
@@ -46,16 +52,18 @@ async function run() {
     "https://cdn.example/master.m3u8",
     "https://cdn.example/1080.m3u8",
     "https://cdn.example/720.m3u8",
+    "https://cdn.example/delhi.m3u8",
   ]);
   assert.strictEqual(streams[0].name, "Vidy - Miami");
   assert.strictEqual(streams[2].name, "Vidy - Atlanta");
+  assert.strictEqual(streams[5].name, "Vidy - Delhi");
   assert.strictEqual(streams[2].quality, "Auto");
   assert.strictEqual(streams[3].quality, "1080p");
   assert.strictEqual(streams[2].subtitles.length, 1);
-  for (const server of ["miami", "atlanta", "seattle", "denver", "dallas", "tampa"]) {
+  for (const server of SERVERS) {
     assert(calls.some((u) => u.pathname === "/" + server + "/sources"), "query " + server);
   }
-  console.log("✓ movie: queries every region and returns streams from multiple regions");
+  console.log("✓ movie: queries all candidate regions and returns streams from multiple regions");
 
   calls = [];
   sourceByServer = { miami: { sources: [{ quality: "1080p", url: "https://cdn.example/tv.m3u8" }] } };
