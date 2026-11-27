@@ -31,7 +31,9 @@ const { getStreams } = require("./src/vidy");
 async function run() {
   calls = [];
   sourceByServer = {
-    miami: null,
+    miami: { playlist: "https://cdn.example/miami.m3u8", sources: [
+      { quality: "720p", url: "https://cdn.example/miami-720.m3u8" },
+    ] },
     atlanta: { playlist: "https://cdn.example/master.m3u8", sources: [
       { quality: "720p", url: "https://cdn.example/720.m3u8" },
       { quality: "1080p", url: "https://cdn.example/1080.m3u8" },
@@ -39,16 +41,21 @@ async function run() {
   };
   let streams = await getStreams("12345", "movie");
   assert.deepStrictEqual(streams.map((s) => s.url), [
+    "https://cdn.example/miami.m3u8",
+    "https://cdn.example/miami-720.m3u8",
     "https://cdn.example/master.m3u8",
     "https://cdn.example/1080.m3u8",
     "https://cdn.example/720.m3u8",
   ]);
-  assert.strictEqual(streams[0].quality, "Auto");
-  assert.strictEqual(streams[1].quality, "1080p");
-  assert.strictEqual(streams[0].subtitles.length, 1);
-  assert(calls.some((u) => u.pathname === "/atlanta/sources"));
-  assert(!calls.some((u) => u.pathname === "/seattle/sources"), "stop after first region with playable sources");
-  console.log("✓ movie: seed, region fallback, decrypt, quality ordering, subtitles");
+  assert.strictEqual(streams[0].name, "Vidy - Miami");
+  assert.strictEqual(streams[2].name, "Vidy - Atlanta");
+  assert.strictEqual(streams[2].quality, "Auto");
+  assert.strictEqual(streams[3].quality, "1080p");
+  assert.strictEqual(streams[2].subtitles.length, 1);
+  for (const server of ["miami", "atlanta", "seattle", "denver", "dallas", "tampa"]) {
+    assert(calls.some((u) => u.pathname === "/" + server + "/sources"), "query " + server);
+  }
+  console.log("✓ movie: queries every region and returns streams from multiple regions");
 
   calls = [];
   sourceByServer = { miami: { sources: [{ quality: "1080p", url: "https://cdn.example/tv.m3u8" }] } };
