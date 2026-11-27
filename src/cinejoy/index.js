@@ -1,7 +1,7 @@
 /**
  * Cinejoy Stremio provider.
  * The resolver runner is adapted from EasyProxy by nzo66 (MIT); see THIRD_PARTY_NOTICES.md.
- * Runs the upstream's documented gateway flow and returns the resolved HLS master URL.
+ * Runs the upstream gateway flow and returns one HLS stream per working server.
  */
 "use strict";
 
@@ -49,8 +49,8 @@ function runResolver(target) {
       let payload;
       try { payload = JSON.parse(lines[lines.length - 1] || "{}"); }
       catch { return finish(new Error("Cinejoy returned invalid JSON: " + stderr.slice(-500))); }
-      if (code !== 0 || payload.error || !/^https?:\/\//i.test(String(payload.url || ""))) {
-        return finish(new Error(String(payload.error || stderr || "No Cinejoy stream returned")));
+      if (code !== 0 || payload.error || !Array.isArray(payload.streams)) {
+        return finish(new Error(String(payload.error || stderr || "No Cinejoy streams returned")));
       }
       finish(null, payload);
     });
@@ -69,26 +69,26 @@ async function getStreams(tmdbId, type, season, episode) {
 
   try {
     const resolved = await runResolver(target);
-    console.info(`[Cinejoy] Resolved ${target.type}:${id} to HLS host ${new URL(resolved.url).host}`);
+    console.info(`[Cinejoy] Resolved ${target.type}:${id} from ${resolved.streams.length} server(s): ${resolved.streams.map((s) => s.server).join(", ")}`);
     const headers = {
       "User-Agent": UA,
       Referer: "https://cinejoy.to/",
       Origin: "https://cinejoy.to",
     };
-    return [{
-      name: "Cinejoy - HLS",
-      title: (isTv ? `S${String(target.season).padStart(2, "0")}E${String(target.episode).padStart(2, "0")}` : "Movie") + " - Auto HLS",
-      url: resolved.url,
+    return resolved.streams.map((resolvedStream) => ({
+      name: `Cinejoy - ${resolvedStream.server} - HLS`,
+      title: (isTv ? `S${String(target.season).padStart(2, "0")}E${String(target.episode).padStart(2, "0")}` : "Movie") + ` - ${resolvedStream.server} - Auto HLS`,
+      url: resolvedStream.url,
       quality: "Auto",
       headers,
       behaviorHints: { notWebReady: true, proxyHeaders: { request: headers } },
-      subtitles: Array.isArray(resolved.subtitles) ? resolved.subtitles.map((sub) => ({
+      subtitles: Array.isArray(resolvedStream.subtitles) ? resolvedStream.subtitles.map((sub) => ({
         url: sub.url,
         language: sub.language || "und",
         name: sub.display || sub.language || "subtitle",
         headers,
       })) : [],
-    }];
+    }));
   } catch (err) {
     console.warn(`[Cinejoy] No stream for ${target.type}:${id}: ` + (err && err.message ? err.message : err));
     return [];
