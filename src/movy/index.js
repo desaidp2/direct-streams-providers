@@ -61,7 +61,7 @@ async function fetchDetailParams(tmdbId, mediaType) {
     });
     if (!response.ok) return {};
     const html = await response.text();
-    const match = html.match(/__NEXT_DATA__[^>]*>(.*?)<\\/script>/s);
+    const match = html.match(/__NEXT_DATA__[^>]*>(.*?)<\/script>/s);
     if (!match) return {};
     const details = JSON.parse(match[1]).props?.pageProps?.details || {};
     return {
