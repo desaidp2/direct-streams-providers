@@ -15,6 +15,9 @@ const API_HEADERS = {
   "Accept-Language": "it-IT,it;q=0.9,en;q=0.8",
   "Origin": SITE,
   "Referer": SITE + "/",
+  "sec-fetch-site": "cross-site",
+  "sec-fetch-mode": "cors",
+  "sec-fetch-dest": "empty",
 };
 const STREAM_HEADERS = {
   "User-Agent": UA,
