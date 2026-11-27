@@ -23,16 +23,7 @@ const STREAM_HEADERS = {
 };
 const REQUEST_TIMEOUT_MS = Number(process.env.MOVY_TIMEOUT_MS || 12000);
 
-async function fetchText(url, timeoutMs = REQUEST_TIMEOUT_MS) {
-  const response = await fetch(url, {
-    headers: API_HEADERS,
-    signal: AbortSignal.timeout(timeoutMs),
-  });
-  if (!response.ok) throw new Error("Movy upstream HTTP " + response.status);
-  return response.text();
-}
-
-function cleanSubtitles(value) {
+async function cleanSubtitles(value) {
   if (!Array.isArray(value)) return [];
   const seen = new Set();
   const out = [];
@@ -122,7 +113,6 @@ async function getStreams(tmdbId, mediaType, season, episode) {
     const seed = String(seedData.seed || "");
     if (!seed) throw new Error("Movy seed missing");
 
-    // Match EasyProxy's player request fields and original-audio server ordering.
     const params = {
       title: detail.title,
       mediaType: type,
@@ -134,15 +124,13 @@ async function getStreams(tmdbId, mediaType, season, episode) {
       imdbId: detail.imdbId,
     };
 
-    const primary = await Promise.allSettled(
-      ORIGINAL_AUDIO_SERVERS.slice(0, 2).map(server => fetchServerSources(server, params, id, seed))
-    );
     const collected = [];
     const seen = new Set();
-    function collect(result, server) {
-      if (result.status !== "fulfilled" || !result.value) return;
-      const playlist = String(result.value.playlist || "").trim();
-      if (!/^https:\/\/\//i.test(playlist) || seen.has(playlist)) return;
+    function collect(data, server) {
+      if (!data) return;
+      const playlist = String(data.playlist || "").trim();
+      // Accept normal HTTPS URLs (the previous triple-slash regex rejected every valid URL).
+      if (!/^https?:\/\//i.test(playlist) || seen.has(playlist)) return;
       seen.add(playlist);
       collected.push({
         name: "Movy - " + server.charAt(0).toUpperCase() + server.slice(1),
@@ -151,39 +139,35 @@ async function getStreams(tmdbId, mediaType, season, episode) {
         url: playlist,
         headers: STREAM_HEADERS,
         behaviorHints: { notWebReady: true, proxyHeaders: { request: STREAM_HEADERS } },
-        subtitles: cleanSubtitles(result.value.subtitles),
+        subtitles: cleanSubtitles(data.subtitles),
       });
     }
-    primary.forEach((result, index) => collect(result, ORIGINAL_AUDIO_SERVERS[index]));
 
-    // Ask the remaining original-audio hosts if Miami/Boise did not yield a playlist.
-    if (!collected.length) {
-      for (const server of ORIGINAL_AUDIO_SERVERS.slice(2)) {
-        try {
-          const data = await fetchServerSources(server, params, id, seed);
-          collect({ status: "fulfilled", value: data }, server);
-          if (collected.length) break;
-        } catch (err) {
-          if (err && err.status === 401) {
-            // Seed expired: obtain a fresh one once and retry this host.
-            const refresh = await fetch(API + "/seed?mediaId=" + encodeURIComponent(id), {
-              headers: API_HEADERS, signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-            });
-            if (refresh.ok) {
-              const freshSeed = String((await refresh.json()).seed || "");
-              if (freshSeed) {
-                try {
-                  const data = await fetchServerSources(server, params, id, freshSeed);
-                  collect({ status: "fulfilled", value: data }, server);
-                  if (collected.length) break;
-                } catch (_) {}
-              }
+    // Try each original-audio server until one yields a valid playlist.
+    for (const server of ORIGINAL_AUDIO_SERVERS) {
+      try {
+        const data = await fetchServerSources(server, params, id, seed);
+        collect(data, server);
+        if (collected.length) break;
+      } catch (err) {
+        if (err && err.status === 401) {
+          const refresh = await fetch(API + "/seed?mediaId=" + encodeURIComponent(id), {
+            headers: API_HEADERS, signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+          });
+          if (refresh.ok) {
+            const freshSeed = String((await refresh.json()).seed || "");
+            if (freshSeed) {
+              try {
+                const data = await fetchServerSources(server, params, id, freshSeed);
+                collect(data, server);
+                if (collected.length) break;
+              } catch (_) {}
             }
           }
         }
       }
     }
-    if (!collected.length) throw new Error("No original-audio Movy server returned a playlist");
+    if (!collected.length) throw new Error("No original-audio Movy server returned a valid playlist");
     console.info("[Movy] Resolved " + type + ":" + id + " using current EasyProxy source flow");
     return collected;
   } catch (err) {
@@ -191,6 +175,7 @@ async function getStreams(tmdbId, mediaType, season, episode) {
     return [];
   }
 }
+
 async function fetchSubtitles(tmdbId, mediaType, season, episode) {
   const streams = await getStreams(tmdbId, mediaType, season, episode);
   return streams.flatMap(stream => stream.subtitles || []);
