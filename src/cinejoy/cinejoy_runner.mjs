@@ -284,6 +284,7 @@ async function resolve() {
     : { tmdb: target.tmdbId, season: String(target.season || 1), episode: String(target.episode || 1) };
 
   let lastError = null;
+  const streams = [];
   for (const server of candidateServers) {
     try {
       log("Trying server:", server.name);
@@ -351,7 +352,7 @@ async function resolve() {
       }
 
       log("Selected working server:", server.name);
-      return {
+      streams.push({
         url: playlistUrl,
         headers: {
           "User-Agent": UA,
@@ -361,14 +362,17 @@ async function resolve() {
         server: server.name,
         target,
         subtitles: sanitizeSubtitles(primaryEntry),
-      };
+      });
+      log("Found working server:", server.name);;
     } catch (err) {
       log(`Server ${server.name} error:`, err.message);
       lastError = err;
     }
   }
 
-  throw lastError || new Error("All Cinejoy servers failed to return a valid stream");
+  if (streams.length === 0) throw lastError || new Error("All Cinejoy servers failed to return a valid stream");
+  log(`Resolved ${streams.length} of ${candidateServers.length} active Cinejoy servers`);
+  return { streams };
 }
 
 try {
