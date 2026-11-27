@@ -15,13 +15,9 @@ const pathModule = require("path");
 const { resolveTmdbId } = require("./id-resolver");
 const { toIso6392 } = require("./languages");
 const { getStreams: getCinejoyStreams } = require("../cinejoy/index");
-const { getStreams: get7MoviesStreams } = require("../7movies/index");
 const { getStreams: getMovyStreams } = require("../movy/index");
-const { getStreams: getFlyStreamStreams } = require("../flystream/index");
 const { CORS_HEADERS } = require("./http-constants");
 const { handleSubtitleProxy } = require("./subtitle-proxy");
-const { companionAllowed } = require("./client-address-private-network-check");
-const { VARIANT_PATH, resolveVariantUrl, renderVariantPlaylist } = require("../shared/hls-variant-playlist");
 
 // Companion responses carry live session cookies: no CORS headers (Nuvio's native fetch does not
 // need them, and `Access-Control-Allow-Origin: *` would let any web page a LAN browser opens read
@@ -82,8 +78,8 @@ function injectCompanionUrl(code, url) {
 const MANIFEST = {
   id: "community.directstreamsproviders",
   version: "1.0.14",
-  name: "Cinejoy + 7Movies Direct Streams",
-  description: "Direct HTTP streams from Cinejoy, 7Movies, Movy and FlyStream. No P2P or torrents.",
+  name: "Movy + Cinejoy EasyProxy Test",
+  description: "Test addon using only the current EasyProxy Movy and Cinejoy extractors.",
   resources: ["stream", "subtitles"],
   types: ["movie", "series"],
   idPrefixes: ["tt", "tmdb:"],
@@ -94,13 +90,10 @@ const MANIFEST = {
   },
 };
 
-// All four direct HTTP providers already implemented in this repository.
-// Each runs in parallel with a bounded deadline; unavailable upstreams return no streams.
+// Only the two current EasyProxy-based providers are enabled in this isolated test addon.
 const PROVIDERS = [
-  { tag: "Cinejoy", getStreams: getCinejoyStreams, deadlineMs: 20000 },
-  { tag: "7Movies", getStreams: get7MoviesStreams, deadlineMs: 18000 },
-  { tag: "Movy", getStreams: getMovyStreams, deadlineMs: 9000 },
-  { tag: "FlyStream", getStreams: getFlyStreamStreams, deadlineMs: 8000 },
+  { tag: "Cinejoy", getStreams: getCinejoyStreams, deadlineMs: 45000 },
+  { tag: "Movy", getStreams: getMovyStreams, deadlineMs: 15000 },
 ];
 
 // Each provider gets this long; a late provider is dropped from the response instead of
@@ -248,7 +241,7 @@ async function resolveStreams(type, rawId, baseUrl) {
       return { streams: [] };
     }
 
-    // Query Cinejoy and 7Movies in parallel; each provider is bounded by its deadline
+    // Query only the current EasyProxy Cinejoy and Movy adapters in parallel.
     const results = await Promise.all(
       PROVIDERS.map((p) =>
         withDeadline(p.getStreams(tmdbId, normType, season, episode), p.deadlineMs || PROVIDER_DEADLINE_MS, p.tag)
@@ -294,14 +287,13 @@ async function handleSubtitles(type, rawId, baseUrl) {
       return { subtitles: [] };
     }
 
-    let rawSubs = [];
-    try {
-      rawSubs = await require("../movy/index").fetchSubtitles(tmdbId, normType, season, episode);
-    } catch (e) {
-      rawSubs = [];
-    }
-
-    const subtitles = mapSubtitles(Array.isArray(rawSubs) ? rawSubs : [], baseUrl);
+    const providerResults = await Promise.all(
+      PROVIDERS.map((provider) => provider.getStreams(tmdbId, normType, season, episode).catch(() => []))
+    );
+    const rawSubs = providerResults.flatMap((streams) =>
+      (Array.isArray(streams) ? streams : []).flatMap((stream) => stream.subtitles || [])
+    );
+    const subtitles = mapSubtitles(rawSubs, baseUrl);
 
     return { subtitles };
   } catch (err) {
@@ -360,78 +352,6 @@ async function route(path, query = {}, baseUrl = "", requestInfo = {}) {
       headers: CORS_HEADERS,
       body: JSON.stringify(result),
     };
-  }
-
-  // Companion routes: private-network clients only (see client-address-private-network-check.js).
-  if (COMPANION_PATHS.has(cleanPath) && !companionAllowed(requestInfo.clientAddress)) {
-    return { status: 403, headers: COMPANION_HEADERS, body: JSON.stringify({ error: "Companion is LAN-only" }) };
-  }
-
-  // Route 5: Companion endpoint for FlyStream (used by client-side QuickJS / Nuvio)
-  if (cleanPath === "/companion/flystream" || cleanPath === "/api/flystream/streams") {
-    const tmdbId = query.tmdbId || query.id;
-    const mediaType = query.type || query.mediaType || "movie";
-    const season = query.season ? parseInt(query.season, 10) : 1;
-    const episode = query.episode ? parseInt(query.episode, 10) : 1;
-    const streams = tmdbId
-      ? await getFlyStreamStreams(tmdbId, mediaType, season, episode, {
-          skipCompanion: true,
-          splitVariants: true,
-          meta: companionMeta(query),
-        })
-      : [];
-    // Fresh objects with resolved variant URLs; the cached originals keep the placeholder.
-    const out = streams.map((s) => {
-      const url = resolveVariantUrl(s.url, baseUrl);
-      return url === s.url ? s : Object.assign({}, s, { url });
-    });
-    return {
-      status: 200,
-      headers: COMPANION_HEADERS,
-      body: JSON.stringify({ ok: out.length > 0, streams: out }),
-    };
-  }
-
-  // Route 5b: single-variant HLS master for FlyStream's ".ts"-named variant playlists. Echoes an
-  // allowlisted URL only; no upstream request (see shared/hls-variant-playlist.js).
-  if (cleanPath === VARIANT_PATH) {
-    const r = renderVariantPlaylist(query);
-    return {
-      status: r.status,
-      headers: { ...CORS_HEADERS, "Content-Type": "application/vnd.apple.mpegurl", "Cache-Control": "no-store" },
-      body: r.body,
-    };
-  }
-
-  // Route 6: Companion session cookies endpoint
-  if (cleanPath === "/companion/flystream/cookies") {
-    const cb = typeof challengeBrowser !== "undefined" ? challengeBrowser : null;
-    const cookies = cb && typeof cb.getCookies === "function" ? await cb.getCookies() : "";
-    const userAgent = cb && typeof cb.getUserAgent === "function" ? await cb.getUserAgent() : "";
-    return {
-      status: 200,
-      headers: COMPANION_HEADERS,
-      body: JSON.stringify({ ok: !!cookies, cookies: cookies, userAgent: userAgent }),
-    };
-  }
-
-  // Route 7: Static provider files for Nuvio plugin installations (/providers/:file.js)
-  const providerMatch = cleanPath.match(/^\/providers\/([a-zA-Z0-9_.-]+\.js)$/);
-  if (providerMatch) {
-    const filename = providerMatch[1];
-    const filepath = pathModule.join(__dirname, "../../providers", filename);
-    // The env is fixed for the process lifetime, so caching the injected text per mtime is safe.
-    const envCompanionUrl = typeof process !== "undefined" && process.env ? process.env.FLYSTREAM_COMPANION_URL : "";
-    const code = readCached(filepath, (text) =>
-      filename === "flystream.js" && envCompanionUrl ? injectCompanionUrl(text, envCompanionUrl) : text
-    );
-    if (code !== null) {
-      return {
-        status: 200,
-        headers: { ...CORS_HEADERS, "Content-Type": "application/javascript; charset=utf-8" },
-        body: code,
-      };
-    }
   }
 
   // 404 Not Found
