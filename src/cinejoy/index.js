@@ -9,7 +9,7 @@ const path = require("node:path");
 const { spawn } = require("node:child_process");
 
 const RUNNER = path.join(__dirname, "cinejoy_runner.mjs");
-const TIMEOUT_MS = Number(process.env.CINEJOY_TIMEOUT_MS || 18000);
+const TIMEOUT_MS = Number(process.env.CINEJOY_TIMEOUT_MS || 40000);
 const MAX_OUTPUT = 1024 * 1024;
 const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
 
