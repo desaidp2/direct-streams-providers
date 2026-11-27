@@ -104,7 +104,7 @@ async function fetchServerSources(server, params, id, seed) {
 
 async function getStreams(tmdbId, mediaType, season, episode) {
   const id = String(tmdbId || "").trim();
-  if (!/^\\d+$/.test(id)) return [];
+  if (!/^\d+$/.test(id)) return [];
   const type = mediaType === "tv" || mediaType === "series" ? "tv" : "movie";
   const s = Math.max(1, parseInt(season, 10) || 1);
   const ep = Math.max(1, parseInt(episode, 10) || 1);
@@ -142,7 +142,7 @@ async function getStreams(tmdbId, mediaType, season, episode) {
     function collect(result, server) {
       if (result.status !== "fulfilled" || !result.value) return;
       const playlist = String(result.value.playlist || "").trim();
-      if (!/^https:\\/\\//i.test(playlist) || seen.has(playlist)) return;
+      if (!/^https:\/\/\//i.test(playlist) || seen.has(playlist)) return;
       seen.add(playlist);
       collected.push({
         name: "Movy - " + server.charAt(0).toUpperCase() + server.slice(1),
