@@ -15,9 +15,6 @@ const pathModule = require("path");
 const { resolveTmdbId } = require("./id-resolver");
 const { toIso6392 } = require("./languages");
 const { getStreams: getCinejoyStreams } = require("../cinejoy/index");
-const { getStreams: getMovyStreams } = require("../movy/index");
-const { getStreams: get7MoviesStreams } = require("../7movies/index");
-const { getStreams: getVidFastStreams } = require("../vidfast/index");
 const { CORS_HEADERS } = require("./http-constants");
 const { handleSubtitleProxy } = require("./subtitle-proxy");
 
@@ -79,9 +76,9 @@ function injectCompanionUrl(code, url) {
 
 const MANIFEST = {
   id: "community.directstreamsproviders",
-  version: "1.0.18",
-  name: "Movy + Cinejoy + 7Movies + VidFast TEST",
-  description: "Isolated test addon for Movy, Cinejoy, 7Movies, and VidFast player fallback.",
+  version: "1.0.19",
+  name: "Cinejoy Only TEST",
+  description: "Isolated test addon with Cinejoy only.",
   resources: ["stream", "subtitles"],
   types: ["movie", "series"],
   idPrefixes: ["tt", "tmdb:"],
@@ -92,12 +89,9 @@ const MANIFEST = {
   },
 };
 
-// Providers enabled in this isolated test addon. 7Movies is enabled for testing only.
+// Only Cinejoy is enabled in this isolated test addon.
 const PROVIDERS = [
   { tag: "Cinejoy", getStreams: getCinejoyStreams, deadlineMs: 45000 },
-  { tag: "Movy", getStreams: getMovyStreams, deadlineMs: 15000 },
-  { tag: "7Movies", getStreams: get7MoviesStreams, deadlineMs: 20000 },
-  { tag: "VidFast", getStreams: getVidFastStreams, deadlineMs: 125000 },
 ];
 
 // Each provider gets this long; a late provider is dropped from the response instead of
@@ -254,7 +248,7 @@ async function resolveStreams(type, rawId, baseUrl) {
       return { streams: [] };
     }
 
-    // Query only the current EasyProxy Cinejoy and Movy adapters in parallel.
+    // Query the enabled provider(s) in parallel.
     const results = await Promise.all(
       PROVIDERS.map((p) =>
         withDeadline(p.getStreams(tmdbId, normType, season, episode), p.deadlineMs || PROVIDER_DEADLINE_MS, p.tag)
