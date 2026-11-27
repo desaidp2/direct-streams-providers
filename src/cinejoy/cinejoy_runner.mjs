@@ -363,7 +363,7 @@ async function resolve() {
         target,
         subtitles: sanitizeSubtitles(primaryEntry),
       });
-      log("Found working server:", server.name);;
+      log("Found working server:", server.name);
     } catch (err) {
       log(`Server ${server.name} error:`, err.message);
       lastError = err;
