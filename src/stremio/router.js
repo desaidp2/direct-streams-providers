@@ -192,6 +192,15 @@ function streamQualityRank(stream) {
   return 0;
 }
 
+function resolveVariantUrl(url, baseUrl) {
+  if (!url) return "";
+  const value = String(url).trim();
+  if (/^https?:\/\//i.test(value)) return value;
+  if (value.startsWith("//")) return "https:" + value;
+  try { return new URL(value, baseUrl || "https://localhost").toString(); }
+  catch (_) { return value; }
+}
+
 function toStremioStream(s, providerTag, baseUrl, subMemo) {
   let subtitles = [];
   if (Array.isArray(s.subtitles)) {
