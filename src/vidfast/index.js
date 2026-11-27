@@ -27,7 +27,7 @@ async function getStreams(tmdbId, mediaType, season, episode) {
     const { stdout } = await execFileAsync(process.execPath, [RUNNER, url], {
       timeout: TIMEOUT_MS,
       maxBuffer: 2 * 1024 * 1024,
-      env: { ...process.env, VIDFAST_DEBUG: process.env.VIDFAST_DEBUG || "0" },
+      env: { ...process.env, VIDFAST_DEBUG: process.env.VIDFAST_DEBUG || "1" },
       windowsHide: true,
     });
     const lines = String(stdout || "").trim().split(/\r?\n/).filter(Boolean);
