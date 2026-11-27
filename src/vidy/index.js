@@ -55,7 +55,8 @@ async function getStreams(tmdbId, mediaType, season, episode) {
     const seed = String(seedData && seedData.seed || "");
     if (!seed) throw new Error("Vidy seed missing");
 
-    for (const server of SERVERS) {
+    // Query every Vidy region concurrently; one healthy region must not hide the others.
+    const regionalResults = await Promise.all(SERVERS.map(async (server) => {
       try {
         const url = new URL(API + "/" + server + "/sources");
         url.searchParams.set("mediaType", type);
@@ -70,7 +71,7 @@ async function getStreams(tmdbId, mediaType, season, episode) {
         const response = await fetchJson(url.toString());
         if (!response.ok) {
           console.warn("[Vidy] " + server + " sources HTTP " + response.status);
-          continue;
+          return [];
         }
 
         let data;
@@ -78,7 +79,7 @@ async function getStreams(tmdbId, mediaType, season, episode) {
           data = JSON.parse(decryptSources(await response.text(), seed, Number(id)));
         } catch (err) {
           console.warn("[Vidy] " + server + " response could not be decrypted: " + (err.message || err));
-          continue;
+          return [];
         }
 
         const subtitles = cleanSubtitles(data && data.subtitles);
@@ -100,7 +101,6 @@ async function getStreams(tmdbId, mediaType, season, episode) {
           });
         };
 
-        // Prefer the master playlist, then expose the individual quality sources.
         if (data && data.playlist) add({ url: data.playlist, quality: "Auto" }, "Auto");
         if (data && Array.isArray(data.sources)) {
           const ordered = data.sources.slice().sort((a, b) => {
@@ -112,13 +112,16 @@ async function getStreams(tmdbId, mediaType, season, episode) {
 
         if (candidates.length) {
           console.info("[Vidy] Resolved " + type + ":" + id + " from " + server + " (" + candidates.length + " stream(s))");
-          return candidates;
         }
+        return candidates;
       } catch (err) {
         console.warn("[Vidy] " + server + " lookup failed: " + (err && err.message ? err.message : err));
+        return [];
       }
-    }
+    }));
 
+    const streams = regionalResults.flat();
+    if (streams.length) return streams;
     console.warn("[Vidy] No playable sources for " + type + ":" + id);
     return [];
   } catch (err) {
