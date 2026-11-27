@@ -77,7 +77,7 @@ function injectCompanionUrl(code, url) {
 const MANIFEST = {
   id: "community.directstreamsproviders",
   version: "1.0.19",
-  name: "Cinejoy Only TEST",
+  name: "Cinejoy",
   description: "Isolated test addon with Cinejoy only.",
   resources: ["stream", "subtitles"],
   types: ["movie", "series"],
