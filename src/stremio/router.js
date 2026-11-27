@@ -17,6 +17,7 @@ const { toIso6392 } = require("./languages");
 const { getStreams: getCinejoyStreams } = require("../cinejoy/index");
 const { getStreams: getMovyStreams } = require("../movy/index");
 const { getStreams: get7MoviesStreams } = require("../7movies/index");
+const { getStreams: getVidFastStreams } = require("../vidfast/index");
 const { CORS_HEADERS } = require("./http-constants");
 const { handleSubtitleProxy } = require("./subtitle-proxy");
 
@@ -78,9 +79,9 @@ function injectCompanionUrl(code, url) {
 
 const MANIFEST = {
   id: "community.directstreamsproviders",
-  version: "1.0.17",
-  name: "Movy + Cinejoy + 7Movies TEST",
-  description: "Isolated test addon for Movy, Cinejoy, and 7Movies.",
+  version: "1.0.18",
+  name: "Movy + Cinejoy + 7Movies + VidFast TEST",
+  description: "Isolated test addon for Movy, Cinejoy, 7Movies, and VidFast player fallback.",
   resources: ["stream", "subtitles"],
   types: ["movie", "series"],
   idPrefixes: ["tt", "tmdb:"],
@@ -96,6 +97,7 @@ const PROVIDERS = [
   { tag: "Cinejoy", getStreams: getCinejoyStreams, deadlineMs: 45000 },
   { tag: "Movy", getStreams: getMovyStreams, deadlineMs: 15000 },
   { tag: "7Movies", getStreams: get7MoviesStreams, deadlineMs: 20000 },
+  { tag: "VidFast", getStreams: getVidFastStreams, deadlineMs: 125000 },
 ];
 
 // Each provider gets this long; a late provider is dropped from the response instead of
