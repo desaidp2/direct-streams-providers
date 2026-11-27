@@ -7,12 +7,11 @@ const { promisify } = require("node:util");
 const execFileAsync = promisify(execFile);
 const RUNNER = path.join(__dirname, "vidfast_runner.mjs");
 const TIMEOUT_MS = Number(process.env.VIDFAST_TIMEOUT_MS || 125000);
-
 const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36";
 
 function pageUrl(tmdbId, mediaType, season, episode) {
   const id = String(tmdbId || "").trim();
-  if (!/^\\d+$/.test(id)) throw new Error("VidFast requires a numeric TMDB id");
+  if (!/^\d+$/.test(id)) throw new Error("VidFast requires a numeric TMDB id");
   if (mediaType === "tv" || mediaType === "series") {
     const s = Math.max(1, parseInt(season, 10) || 1);
     const ep = Math.max(1, parseInt(episode, 10) || 1);
@@ -25,23 +24,24 @@ async function getStreams(tmdbId, mediaType, season, episode) {
   let url;
   try {
     url = pageUrl(tmdbId, mediaType, season, episode);
-    const { stdout, stderr } = await execFileAsync(process.execPath, [RUNNER, url], {
+    const { stdout } = await execFileAsync(process.execPath, [RUNNER, url], {
       timeout: TIMEOUT_MS,
       maxBuffer: 2 * 1024 * 1024,
       env: { ...process.env, VIDFAST_DEBUG: process.env.VIDFAST_DEBUG || "0" },
       windowsHide: true,
     });
-    const payload = JSON.parse(String(stdout || "").trim().split(/\\r?\\n/).filter(Boolean).pop() || "{}");
+    const lines = String(stdout || "").trim().split(/\r?\n/).filter(Boolean);
+    const payload = JSON.parse(lines[lines.length - 1] || "{}");
     if (payload.error) throw new Error(payload.error);
     const streamUrl = String(payload.url || "").trim();
-    if (!/^https?:\\/\\//i.test(streamUrl)) throw new Error("VidFast returned no playable URL");
+    if (!/^https?:\/\//i.test(streamUrl)) throw new Error("VidFast returned no playable URL");
     const headers = payload.headers && typeof payload.headers === "object" ? payload.headers : {
       "User-Agent": UA,
       Referer: url,
       Origin: "https://vidfast.vc",
     };
     const subtitles = (Array.isArray(payload.subtitles) ? payload.subtitles : [])
-      .filter(item => item && /^https?:\\/\\//i.test(String(item.url || "")))
+      .filter(item => item && /^https?:\/\//i.test(String(item.url || "")))
       .slice(0, 80)
       .map(item => ({
         url: String(item.url),
