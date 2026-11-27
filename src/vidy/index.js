@@ -10,7 +10,13 @@ const { decryptSources } = require("../movy/mvm1-byte-codecs");
 const API = "https://api.wecollege.net";
 const SITE = "https://www.vidy.st";
 const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36";
-const SERVERS = ["miami", "atlanta", "seattle", "denver", "dallas", "tampa"];
+// Known Vidy regional lanes plus additional community-documented candidates.
+// Unavailable lanes are safely skipped at request time.
+const SERVERS = [
+  "miami", "boise", "vegas", "reno", "oakland", "seattle", "phoenix",
+  "atlanta", "portland", "austin", "dallas", "tampa", "orlando",
+  "denver", "munich", "berlin", "paris", "delhi", "cancun",
+];
 const TIMEOUT_MS = Number(process.env.VIDY_TIMEOUT_MS || 7000);
 const HEADERS = {
   "User-Agent": UA,
@@ -55,7 +61,7 @@ async function getStreams(tmdbId, mediaType, season, episode) {
     const seed = String(seedData && seedData.seed || "");
     if (!seed) throw new Error("Vidy seed missing");
 
-    // Query every Vidy region concurrently; one healthy region must not hide the others.
+    // Query every candidate Vidy region concurrently; one healthy region must not hide others.
     const regionalResults = await Promise.all(SERVERS.map(async (server) => {
       try {
         const url = new URL(API + "/" + server + "/sources");
