@@ -53,54 +53,144 @@ function cleanSubtitles(value) {
   return out;
 }
 
+async function fetchDetailParams(tmdbId, mediaType) {
+  try {
+    const response = await fetch(SITE + "/" + mediaType + "/" + tmdbId, {
+      headers: { "User-Agent": UA },
+      signal: AbortSignal.timeout(3500),
+    });
+    if (!response.ok) return {};
+    const html = await response.text();
+    const match = html.match(/__NEXT_DATA__[^>]*>(.*?)<\\/script>/s);
+    if (!match) return {};
+    const details = JSON.parse(match[1]).props?.pageProps?.details || {};
+    return {
+      title: details.title ? encodeURIComponent(details.title) : undefined,
+      year: details.year,
+      imdbId: details.imdbId,
+      totalSeasons: Array.isArray(details.seasons) ? details.seasons.length : undefined,
+    };
+  } catch (_) {
+    return {};
+  }
+}
+
+function buildQuery(params) {
+  const query = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (value !== undefined && value !== null && value !== "") query.set(key, String(value));
+  }
+  return query.toString();
+}
+
+const ORIGINAL_AUDIO_SERVERS = [
+  "miami", "boise", "nashville", "chicago", "vegas", "reno", "oakland",
+  "seattle", "phoenix", "atlanta", "portland", "austin", "dallas",
+];
+
+async function fetchServerSources(server, params, id, seed) {
+  const url = API + "/" + server + "/sources?" + buildQuery({ ...params, enc: "2", seed });
+  const response = await fetch(url, {
+    headers: API_HEADERS,
+    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+  });
+  if (!response.ok) {
+    const error = new Error("Movy " + server + " sources HTTP " + response.status);
+    error.status = response.status;
+    throw error;
+  }
+  return JSON.parse(decryptSources(await response.text(), seed, id));
+}
+
 async function getStreams(tmdbId, mediaType, season, episode) {
   const id = String(tmdbId || "").trim();
-  if (!/^\d+$/.test(id)) return [];
+  if (!/^\\d+$/.test(id)) return [];
   const type = mediaType === "tv" || mediaType === "series" ? "tv" : "movie";
   const s = Math.max(1, parseInt(season, 10) || 1);
   const ep = Math.max(1, parseInt(episode, 10) || 1);
 
   try {
-    // Current EasyProxy extractor flow: fetch a short-lived per-title seed,
-    // then request the encrypted Miami source payload using that seed.
-    const seedText = await fetchText(API + "/seed?mediaId=" + encodeURIComponent(id));
-    const seedData = JSON.parse(seedText);
+    const [seedResponse, detail] = await Promise.all([
+      fetch(API + "/seed?mediaId=" + encodeURIComponent(id), {
+        headers: API_HEADERS,
+        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+      }),
+      fetchDetailParams(id, type),
+    ]);
+    if (!seedResponse.ok) throw new Error("Movy seed HTTP " + seedResponse.status);
+    const seedData = await seedResponse.json();
     const seed = String(seedData.seed || "");
     if (!seed) throw new Error("Movy seed missing");
 
-    const params = new URLSearchParams({
+    // Match EasyProxy's player request fields and original-audio server ordering.
+    const params = {
+      title: detail.title,
       mediaType: type,
-      tmdbId: id,
-    });
-    if (type === "tv") {
-      params.set("seasonId", String(s));
-      params.set("episodeId", String(ep));
+      year: detail.year,
+      totalSeasons: type === "tv" ? detail.totalSeasons : 0,
+      episodeId: type === "tv" ? ep : 1,
+      seasonId: type === "tv" ? s : 1,
+      tmdbId: Number(id),
+      imdbId: detail.imdbId,
+    };
+
+    const primary = await Promise.allSettled(
+      ORIGINAL_AUDIO_SERVERS.slice(0, 2).map(server => fetchServerSources(server, params, id, seed))
+    );
+    const collected = [];
+    const seen = new Set();
+    function collect(result, server) {
+      if (result.status !== "fulfilled" || !result.value) return;
+      const playlist = String(result.value.playlist || "").trim();
+      if (!/^https:\\/\\//i.test(playlist) || seen.has(playlist)) return;
+      seen.add(playlist);
+      collected.push({
+        name: "Movy - " + server.charAt(0).toUpperCase() + server.slice(1),
+        title: (type === "tv" ? "S" + String(s).padStart(2, "0") + "E" + String(ep).padStart(2, "0") : "Movie") + " - Auto HLS",
+        quality: "Auto",
+        url: playlist,
+        headers: STREAM_HEADERS,
+        behaviorHints: { notWebReady: true, proxyHeaders: { request: STREAM_HEADERS } },
+        subtitles: cleanSubtitles(result.value.subtitles),
+      });
     }
-    params.set("enc", "2");
-    params.set("seed", seed);
+    primary.forEach((result, index) => collect(result, ORIGINAL_AUDIO_SERVERS[index]));
 
-    const encrypted = await fetchText(API + "/miami/sources?" + params.toString());
-    const payload = JSON.parse(decryptSources(encrypted, seed, id));
-    const playlist = String(payload.playlist || "").trim();
-    if (!/^https:\/\//i.test(playlist)) throw new Error("Movy returned no playable HLS playlist");
-
-    const subtitles = cleanSubtitles(payload.subtitles);
-    console.info("[Movy] Resolved " + type + ":" + id + " via current EasyProxy API flow");
-    return [{
-      name: "Movy - Miami",
-      title: (type === "tv" ? "S" + String(s).padStart(2, "0") + "E" + String(ep).padStart(2, "0") : "Movie") + " - Auto HLS",
-      quality: "Auto",
-      url: playlist,
-      headers: STREAM_HEADERS,
-      behaviorHints: { notWebReady: true, proxyHeaders: { request: STREAM_HEADERS } },
-      subtitles,
-    }];
+    // Ask the remaining original-audio hosts if Miami/Boise did not yield a playlist.
+    if (!collected.length) {
+      for (const server of ORIGINAL_AUDIO_SERVERS.slice(2)) {
+        try {
+          const data = await fetchServerSources(server, params, id, seed);
+          collect({ status: "fulfilled", value: data }, server);
+          if (collected.length) break;
+        } catch (err) {
+          if (err && err.status === 401) {
+            // Seed expired: obtain a fresh one once and retry this host.
+            const refresh = await fetch(API + "/seed?mediaId=" + encodeURIComponent(id), {
+              headers: API_HEADERS, signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+            });
+            if (refresh.ok) {
+              const freshSeed = String((await refresh.json()).seed || "");
+              if (freshSeed) {
+                try {
+                  const data = await fetchServerSources(server, params, id, freshSeed);
+                  collect({ status: "fulfilled", value: data }, server);
+                  if (collected.length) break;
+                } catch (_) {}
+              }
+            }
+          }
+        }
+      }
+    }
+    if (!collected.length) throw new Error("No original-audio Movy server returned a playlist");
+    console.info("[Movy] Resolved " + type + ":" + id + " using current EasyProxy source flow");
+    return collected;
   } catch (err) {
     console.warn("[Movy] No stream for " + type + ":" + id + ": " + (err && err.message ? err.message : err));
     return [];
   }
 }
-
 async function fetchSubtitles(tmdbId, mediaType, season, episode) {
   const streams = await getStreams(tmdbId, mediaType, season, episode);
   return streams.flatMap(stream => stream.subtitles || []);
