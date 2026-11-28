@@ -105,8 +105,9 @@ const PROVIDERS = [
 // holding it open. Response time is bounded by max(deadline), not by the slowest upstream.
 const envDeadline =
   typeof process !== "undefined" && process.env ? parseInt(process.env.PROVIDER_DEADLINE_MS || "", 10) : NaN;
-// Cinejoy may need several upstream server checks; 9s dropped it before fallback finished.
+// Keep the normal provider budget, but give Cinejoy time to check all active servers.
 const PROVIDER_DEADLINE_MS = envDeadline > 0 ? envDeadline : 22000;
+const CINEJOY_PROVIDER_DEADLINE_MS = Math.max(PROVIDER_DEADLINE_MS, 70000);
 
 // Identical concurrent stream requests (players often fire the same one 2-3 times while the
 // sheet opens) share one resolution: k duplicates cost 1 x P provider calls, not k x P.
@@ -230,7 +231,11 @@ async function resolveStreams(type, rawId, baseUrl) {
     // Query all providers in parallel, each bounded by its deadline
     const results = await Promise.all(
       PROVIDERS.map((p) =>
-        withDeadline(p.getStreams(tmdbId, normType, season, episode), PROVIDER_DEADLINE_MS, p.tag)
+        withDeadline(
+          p.getStreams(tmdbId, normType, season, episode),
+          p.tag === "Cinejoy" ? CINEJOY_PROVIDER_DEADLINE_MS : PROVIDER_DEADLINE_MS,
+          p.tag
+        )
       )
     );
 
