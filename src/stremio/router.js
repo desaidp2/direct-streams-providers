@@ -84,7 +84,7 @@ const MANIFEST = {
   id: "community.directstreamsproviders",
   version: "1.0.15",
   name: "Direct Streams Providers",
-  description: "Fast direct streams from Cinejoy, 7Movies, Movy & FlyStream with multilingual subtitles (No Debrid Needed)",
+  description: "Direct streams from Movy, Vidy, Cinejoy, 7Movies, FlyStream, ArrowTV, Atlantic, BingeBang, Cineruv & Flyflix (No Debrid Needed)",
   resources: ["stream", "subtitles"],
   types: ["movie", "series"],
   idPrefixes: ["tt", "tmdb:"],
@@ -104,6 +104,28 @@ const PROVIDERS = [
   // splitVariants: one row per HLS quality + Auto (variant URLs resolved against baseUrl below)
   { tag: "FlyStream", getStreams: (id, type, s, e) => getFlyStreamStreams(id, type, s, e, { splitVariants: true }) },
 ];
+
+// Optional remote bridge to the FMHY runtime. Its deployment contains the five requested
+// families and performs their site-specific discovery, extraction and HLS relaying.
+async function getFmhyStreams(type, rawId) {
+  const base = String(process.env.FMHY_ADDON_URL || "https://fmhy-webstream-test.onrender.com").replace(/\\/+$/, "");
+  const fmhyType = type === "tv" ? "series" : "movie";
+  const url = `${base}/stream/${fmhyType}/${encodeURIComponent(rawId)}.json`;
+  try {
+    const response = await fetch(url, {
+      headers: { Accept: "application/json" },
+      signal: AbortSignal.timeout(18000),
+    });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const payload = await response.json();
+    return Array.isArray(payload.streams)
+      ? payload.streams.filter((stream) => stream && typeof stream.url === "string" && /^https?:\\/\\//i.test(stream.url))
+      : [];
+  } catch (err) {
+    console.warn(`[StremioRouter] FMHY provider bridge failed: ${err.message || err}`);
+    return [];
+  }
+}
 
 // Each provider gets this long; a late provider is dropped from the response instead of
 // holding it open. Response time is bounded by max(deadline), not by the slowest upstream.
@@ -232,11 +254,12 @@ async function resolveStreams(type, rawId, baseUrl) {
     }
 
     // Query all providers in parallel, each bounded by its deadline
-    const results = await Promise.all(
-      PROVIDERS.map((p) =>
+    const [results, fmhyStreams] = await Promise.all([
+      Promise.all(PROVIDERS.map((p) =>
         withDeadline(p.getStreams(tmdbId, normType, season, episode), PROVIDER_DEADLINE_MS, p.tag)
-      )
-    );
+      )),
+      withDeadline(getFmhyStreams(normType, rawId), 19000, "FMHY"),
+    ]);
 
     const streams = [];
     const subMemo = new Map();
@@ -245,6 +268,16 @@ async function resolveStreams(type, rawId, baseUrl) {
       if (!Array.isArray(list)) continue;
       for (const s of list) {
         streams.push(toStremioStream(s, PROVIDERS[i].tag, baseUrl, subMemo));
+      }
+    }
+
+    // FMHY already returns Stremio-formatted streams, including its signed HLS relay URLs,
+    // source labels, playback headers and subtitles. Preserve those fields unchanged.
+    const seenUrls = new Set(streams.map((stream) => stream.url));
+    for (const stream of fmhyStreams) {
+      if (!seenUrls.has(stream.url)) {
+        streams.push(stream);
+        seenUrls.add(stream.url);
       }
     }
 
