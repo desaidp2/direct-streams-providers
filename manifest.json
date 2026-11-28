@@ -1,5 +1,88 @@
 {
-  "name": "Cinejoy + 7Movies TEST",
-  "version": "1.0.16",
-  "scrapers": []
+  "name": "Direct Streams Providers",
+  "version": "1.0.14",
+  "scrapers": [
+    {
+      "id": "7movies",
+      "name": "7Movies",
+      "description": "7movies.ac sources (VidLink upstream) - direct MP4/HLS with subtitles",
+      "version": "1.0.6",
+      "author": "Anh Pham",
+      "supportedTypes": [
+        "movie",
+        "tv"
+      ],
+      "filename": "providers/7movies.js",
+      "enabled": true,
+      "formats": [
+        "mp4",
+        "m3u8"
+      ],
+      "logo": "https://www.google.com/s2/favicons?domain=7movies.ac&sz=128",
+      "contentLanguage": [
+        "en"
+      ]
+    },
+    {
+      "id": "movy",
+      "name": "Movy",
+      "description": "movy.sx sources (wecollege API, mvm1-decrypted) - direct HLS up to 4K with subtitles",
+      "version": "1.0.4",
+      "author": "Anh Pham",
+      "supportedTypes": [
+        "movie",
+        "tv"
+      ],
+      "filename": "providers/movy.js",
+      "enabled": true,
+      "formats": [
+        "m3u8"
+      ],
+      "logo": "https://www.google.com/s2/favicons?domain=movy.sx&sz=128",
+      "contentLanguage": [
+        "en"
+      ]
+    },
+    {
+      "id": "flystream",
+      "name": "FlyStream",
+      "description": "flystream.net sources (JSON /api/streams) - direct HLS up to 4K HEVC",
+      "version": "1.0.7",
+      "author": "Anh Pham",
+      "supportedTypes": [
+        "movie",
+        "tv"
+      ],
+      "filename": "providers/flystream.js",
+      "enabled": true,
+      "formats": [
+        "m3u8",
+        "mp4"
+      ],
+      "logo": "https://flystream.net/favicon.ico",
+      "contentLanguage": [
+        "en"
+      ]
+    },
+    {
+      "id": "cinejoy",
+      "name": "Cinejoy",
+      "description": "Cinejoy sources (encrypted gateway + WebAssembly resolver) - direct HLS with subtitles",
+      "version": "1.0.0",
+      "author": "Community",
+      "supportedTypes": [
+        "movie",
+        "tv"
+      ],
+      "filename": "providers/cinejoy.js",
+      "enabled": true,
+      "formats": [
+        "m3u8"
+      ],
+      "logo": "https://www.google.com/s2/favicons?domain=cinejoy.to&sz=128",
+      "contentLanguage": [
+        "en"
+      ]
+    }
+  ]
 }
