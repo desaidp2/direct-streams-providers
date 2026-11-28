@@ -271,7 +271,7 @@ async function resolve() {
   // Il 4K si prova per primo, ma senza restringere la lista: se nessun server
   // 4K ha una playlist valida si scende a Nebula/1080p. La qualita' finale la
   // sceglie il DUAL manifest (_pick_video), che degrada alla variante migliore.
-  const candidateServers = [...with4k, ...nebula, ...others];
+  const candidateServers = [...new Map([...with4k, ...nebula, ...others].map((server) => [server.name, server])).values()];
 
   if (candidateServers.length === 0) {
     throw new Error("No active Cinejoy server found");
@@ -372,7 +372,7 @@ async function resolve() {
 
   if (streams.length === 0) throw lastError || new Error("All Cinejoy servers failed to return a valid stream");
   log(`Resolved ${streams.length} of ${candidateServers.length} active Cinejoy servers`);
-  return { streams };
+  return { streams, serversAttempted: candidateServers.length };
 }
 
 try {
