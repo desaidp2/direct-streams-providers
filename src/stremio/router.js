@@ -14,12 +14,14 @@ const fs = require("fs");
 const pathModule = require("path");
 const { resolveTmdbId } = require("./id-resolver");
 const { toIso6392 } = require("./languages");
-const { getStreams: getCinejoyStreams } = require("../cinejoy/index");
-const { getStreams: getMovyStreams } = require("../movy/index");
-const { getStreams: getVidyStreams } = require("../vidy/index");
 const { getStreams: get7MoviesStreams } = require("../7movies/index");
+const { getStreams: getMovyStreams, fetchSubtitles: fetchMovySubtitles } = require("../movy/index");
+const { getStreams: getCinejoyStreams } = require("../cinejoy/index");
+const { getStreams: getFlyStreamStreams } = require("../flystream/index");
 const { CORS_HEADERS } = require("./http-constants");
 const { handleSubtitleProxy } = require("./subtitle-proxy");
+const { companionAllowed } = require("./client-address-private-network-check");
+const { VARIANT_PATH, resolveVariantUrl, renderVariantPlaylist } = require("../shared/hls-variant-playlist");
 
 // Companion responses carry live session cookies: no CORS headers (Nuvio's native fetch does not
 // need them, and `Access-Control-Allow-Origin: *` would let any web page a LAN browser opens read
@@ -79,9 +81,9 @@ function injectCompanionUrl(code, url) {
 
 const MANIFEST = {
   id: "community.directstreamsproviders",
-  version: "1.0.19",
-  name: "Cinejoy + 7Movies TEST",
-  description: "Direct streams from Cinejoy and 7Movies (test).",
+  version: "1.0.15",
+  name: "Direct Streams Providers",
+  description: "Fast direct streams from Cinejoy, 7Movies, Movy & FlyStream with multilingual subtitles (No Debrid Needed)",
   resources: ["stream", "subtitles"],
   types: ["movie", "series"],
   idPrefixes: ["tt", "tmdb:"],
@@ -92,17 +94,21 @@ const MANIFEST = {
   },
 };
 
-// Temporary test: Cinejoy and 7Movies enabled; Movy and Vidy hidden.
+// Output order: Movy first (often up to 4K), then 7Movies MP4s, then FlyStream.
 const PROVIDERS = [
-  { tag: "Cinejoy", getStreams: getCinejoyStreams, deadlineMs: 45000 },
-  { tag: "7Movies", getStreams: get7MoviesStreams, deadlineMs: 45000 },
+  { tag: "Movy", getStreams: getMovyStreams },
+  { tag: "Cinejoy", getStreams: getCinejoyStreams },
+  { tag: "7Movies", getStreams: get7MoviesStreams },
+  // splitVariants: one row per HLS quality + Auto (variant URLs resolved against baseUrl below)
+  { tag: "FlyStream", getStreams: (id, type, s, e) => getFlyStreamStreams(id, type, s, e, { splitVariants: true }) },
 ];
 
 // Each provider gets this long; a late provider is dropped from the response instead of
 // holding it open. Response time is bounded by max(deadline), not by the slowest upstream.
 const envDeadline =
   typeof process !== "undefined" && process.env ? parseInt(process.env.PROVIDER_DEADLINE_MS || "", 10) : NaN;
-const PROVIDER_DEADLINE_MS = envDeadline > 0 ? envDeadline : 9000;
+// Cinejoy may need several upstream server checks; 9s dropped it before fallback finished.
+const PROVIDER_DEADLINE_MS = envDeadline > 0 ? envDeadline : 22000;
 
 // Identical concurrent stream requests (players often fire the same one 2-3 times while the
 // sheet opens) share one resolution: k duplicates cost 1 x P provider calls, not k x P.
@@ -174,35 +180,6 @@ function mapSubtitles(rawSubs, baseUrl) {
  * response) maps each distinct array once, so S streams x T subtitles cost O(S + T)
  * instead of O(S x T) mapping work and allocations.
  */
-function streamQualityRank(stream) {
-  const hints = stream && stream.behaviorHints;
-  const text = [
-    stream && stream.quality,
-    stream && stream.resolution,
-    stream && stream.name,
-    stream && stream.title,
-    hints && hints.filename,
-  ].filter(Boolean).join(" ").toLowerCase();
-
-  // Explicit resolution wins over codec/release labels (e.g. a 1080p REMUX stays in 1080p).
-  if (/\b(?:2160p?|4k|uhd)\b/i.test(text)) return 5;
-  if (/\b(?:1440p?|2k)\b/i.test(text)) return 4;
-  if (/\b1080p?\b/i.test(text)) return 3;
-  if (/\b720p?\b/i.test(text)) return 2;
-  if (/\b(?:480p?|360p?|240p?)\b/i.test(text)) return 1;
-  if (/\bremux\b/i.test(text)) return 5;
-  return 0;
-}
-
-function resolveVariantUrl(url, baseUrl) {
-  if (!url) return "";
-  const value = String(url).trim();
-  if (/^https?:\/\//i.test(value)) return value;
-  if (value.startsWith("//")) return "https:" + value;
-  try { return new URL(value, baseUrl || "https://localhost").toString(); }
-  catch (_) { return value; }
-}
-
 function toStremioStream(s, providerTag, baseUrl, subMemo) {
   let subtitles = [];
   if (Array.isArray(s.subtitles)) {
@@ -252,33 +229,24 @@ async function resolveStreams(type, rawId, baseUrl) {
       return { streams: [] };
     }
 
-    // Query the enabled provider(s) in parallel.
+    // Query all providers in parallel, each bounded by its deadline
     const results = await Promise.all(
       PROVIDERS.map((p) =>
-        withDeadline(p.getStreams(tmdbId, normType, season, episode), p.deadlineMs || PROVIDER_DEADLINE_MS, p.tag)
+        withDeadline(p.getStreams(tmdbId, normType, season, episode), PROVIDER_DEADLINE_MS, p.tag)
       )
     );
 
-    for (let i = 0; i < PROVIDERS.length; i++) {
-      console.info(`[StremioRouter] ${PROVIDERS[i].tag} returned ${Array.isArray(results[i]) ? results[i].length : 0} stream(s) for ${normType}:${tmdbId}:${season || ""}:${episode || ""}`);
-    }
-    const rankedStreams = [];
+    const streams = [];
     const subMemo = new Map();
     for (let i = 0; i < PROVIDERS.length; i++) {
       const list = results[i];
       if (!Array.isArray(list)) continue;
       for (const s of list) {
-        rankedStreams.push({
-          stream: toStremioStream(s, PROVIDERS[i].tag, baseUrl, subMemo),
-          rank: streamQualityRank(s),
-        });
+        streams.push(toStremioStream(s, PROVIDERS[i].tag, baseUrl, subMemo));
       }
     }
 
-    // Stable sort: 4K → 1440p → 1080p → 720p → lower/unknown.
-    // Equal-quality streams keep their existing provider order.
-    rankedStreams.sort((a, b) => b.rank - a.rank);
-    return { streams: rankedStreams.map((entry) => entry.stream) };
+    return { streams };
   } catch (err) {
     console.error("[StremioRouter] Error resolving streams:", err);
     return { streams: [] };
@@ -298,13 +266,14 @@ async function handleSubtitles(type, rawId, baseUrl) {
       return { subtitles: [] };
     }
 
-    const providerResults = await Promise.all(
-      PROVIDERS.map((provider) => provider.getStreams(tmdbId, normType, season, episode).catch(() => []))
-    );
-    const rawSubs = providerResults.flatMap((streams) =>
-      (Array.isArray(streams) ? streams : []).flatMap((stream) => stream.subtitles || [])
-    );
-    const subtitles = mapSubtitles(rawSubs, baseUrl);
+    let rawSubs = [];
+    try {
+      rawSubs = await fetchMovySubtitles(tmdbId, normType, season, episode);
+    } catch (e) {
+      rawSubs = [];
+    }
+
+    const subtitles = mapSubtitles(Array.isArray(rawSubs) ? rawSubs : [], baseUrl);
 
     return { subtitles };
   } catch (err) {
@@ -363,6 +332,78 @@ async function route(path, query = {}, baseUrl = "", requestInfo = {}) {
       headers: CORS_HEADERS,
       body: JSON.stringify(result),
     };
+  }
+
+  // Companion routes: private-network clients only (see client-address-private-network-check.js).
+  if (COMPANION_PATHS.has(cleanPath) && !companionAllowed(requestInfo.clientAddress)) {
+    return { status: 403, headers: COMPANION_HEADERS, body: JSON.stringify({ error: "Companion is LAN-only" }) };
+  }
+
+  // Route 5: Companion endpoint for FlyStream (used by client-side QuickJS / Nuvio)
+  if (cleanPath === "/companion/flystream" || cleanPath === "/api/flystream/streams") {
+    const tmdbId = query.tmdbId || query.id;
+    const mediaType = query.type || query.mediaType || "movie";
+    const season = query.season ? parseInt(query.season, 10) : 1;
+    const episode = query.episode ? parseInt(query.episode, 10) : 1;
+    const streams = tmdbId
+      ? await getFlyStreamStreams(tmdbId, mediaType, season, episode, {
+          skipCompanion: true,
+          splitVariants: true,
+          meta: companionMeta(query),
+        })
+      : [];
+    // Fresh objects with resolved variant URLs; the cached originals keep the placeholder.
+    const out = streams.map((s) => {
+      const url = resolveVariantUrl(s.url, baseUrl);
+      return url === s.url ? s : Object.assign({}, s, { url });
+    });
+    return {
+      status: 200,
+      headers: COMPANION_HEADERS,
+      body: JSON.stringify({ ok: out.length > 0, streams: out }),
+    };
+  }
+
+  // Route 5b: single-variant HLS master for FlyStream's ".ts"-named variant playlists. Echoes an
+  // allowlisted URL only; no upstream request (see shared/hls-variant-playlist.js).
+  if (cleanPath === VARIANT_PATH) {
+    const r = renderVariantPlaylist(query);
+    return {
+      status: r.status,
+      headers: { ...CORS_HEADERS, "Content-Type": "application/vnd.apple.mpegurl", "Cache-Control": "no-store" },
+      body: r.body,
+    };
+  }
+
+  // Route 6: Companion session cookies endpoint
+  if (cleanPath === "/companion/flystream/cookies") {
+    const cb = typeof challengeBrowser !== "undefined" ? challengeBrowser : null;
+    const cookies = cb && typeof cb.getCookies === "function" ? await cb.getCookies() : "";
+    const userAgent = cb && typeof cb.getUserAgent === "function" ? await cb.getUserAgent() : "";
+    return {
+      status: 200,
+      headers: COMPANION_HEADERS,
+      body: JSON.stringify({ ok: !!cookies, cookies: cookies, userAgent: userAgent }),
+    };
+  }
+
+  // Route 7: Static provider files for Nuvio plugin installations (/providers/:file.js)
+  const providerMatch = cleanPath.match(/^\/providers\/([a-zA-Z0-9_.-]+\.js)$/);
+  if (providerMatch) {
+    const filename = providerMatch[1];
+    const filepath = pathModule.join(__dirname, "../../providers", filename);
+    // The env is fixed for the process lifetime, so caching the injected text per mtime is safe.
+    const envCompanionUrl = typeof process !== "undefined" && process.env ? process.env.FLYSTREAM_COMPANION_URL : "";
+    const code = readCached(filepath, (text) =>
+      filename === "flystream.js" && envCompanionUrl ? injectCompanionUrl(text, envCompanionUrl) : text
+    );
+    if (code !== null) {
+      return {
+        status: 200,
+        headers: { ...CORS_HEADERS, "Content-Type": "application/javascript; charset=utf-8" },
+        body: code,
+      };
+    }
   }
 
   // 404 Not Found
