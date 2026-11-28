@@ -16,6 +16,7 @@ const { resolveTmdbId } = require("./id-resolver");
 const { toIso6392 } = require("./languages");
 const { getStreams: get7MoviesStreams } = require("../7movies/index");
 const { getStreams: getMovyStreams, fetchSubtitles: fetchMovySubtitles } = require("../movy/index");
+const { getStreams: getVidyStreams } = require("../vidy/index");
 const { getStreams: getCinejoyStreams } = require("../cinejoy/index");
 const { getStreams: getFlyStreamStreams } = require("../flystream/index");
 const { CORS_HEADERS } = require("./http-constants");
@@ -97,6 +98,7 @@ const MANIFEST = {
 // Output order: Movy first (often up to 4K), then 7Movies MP4s, then FlyStream.
 const PROVIDERS = [
   { tag: "Movy", getStreams: getMovyStreams },
+  { tag: "Vidy", getStreams: getVidyStreams },
   { tag: "Cinejoy", getStreams: getCinejoyStreams },
   { tag: "7Movies", getStreams: get7MoviesStreams },
   // splitVariants: one row per HLS quality + Auto (variant URLs resolved against baseUrl below)
