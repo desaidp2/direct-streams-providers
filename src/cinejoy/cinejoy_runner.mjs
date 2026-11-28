@@ -260,6 +260,11 @@ async function getServers() {
   const payload = await res.json();
   const servers = Array.isArray(payload) ? payload : payload?.servers;
   if (!Array.isArray(servers)) throw new Error("Invalid Cinejoy servers response");
+  console.info("[Cinejoy] Server inventory:", JSON.stringify(servers.map((s) => ({
+    name: s?.name || null,
+    status: s?.status || null,
+    is4k: s?.["4k"] === true,
+  }))));
   return servers.filter((s) => s?.name && s.status === "ok");
 }
 
