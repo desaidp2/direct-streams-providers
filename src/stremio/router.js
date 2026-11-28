@@ -95,14 +95,10 @@ const MANIFEST = {
   },
 };
 
-// Output order: Movy first (often up to 4K), then 7Movies MP4s, then FlyStream.
+// Test configuration: only Cinejoy and 7Movies are enabled for stream resolution.
 const PROVIDERS = [
-  { tag: "Movy", getStreams: getMovyStreams },
-  { tag: "Vidy", getStreams: getVidyStreams },
   { tag: "Cinejoy", getStreams: getCinejoyStreams },
   { tag: "7Movies", getStreams: get7MoviesStreams },
-  // splitVariants: one row per HLS quality + Auto (variant URLs resolved against baseUrl below)
-  { tag: "FlyStream", getStreams: (id, type, s, e) => getFlyStreamStreams(id, type, s, e, { splitVariants: true }) },
 ];
 
 // Each provider gets this long; a late provider is dropped from the response instead of
