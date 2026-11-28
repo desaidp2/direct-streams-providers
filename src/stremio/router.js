@@ -120,7 +120,7 @@ async function getFmhyStreams(type, rawId) {
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const payload = await response.json();
     return Array.isArray(payload.streams)
-      ? payload.streams.filter((stream) => stream && typeof stream.url === "string" && /^https?:\\/\\//i.test(stream.url))
+      ? payload.streams.filter((stream) => stream && typeof stream.url === "string" && /^https?:\/\//i.test(stream.url))
       : [];
   } catch (err) {
     console.warn(`[StremioRouter] FMHY provider bridge failed: ${err.message || err}`);
