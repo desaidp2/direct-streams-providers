@@ -97,8 +97,7 @@ const MANIFEST = {
 
 // Output order: Movy first (often up to 4K), then 7Movies MP4s, then FlyStream.
 const PROVIDERS = [
-  { tag: "Movy", getStreams: getMovyStreams },
-  { tag: "Vidy", getStreams: getVidyStreams },
+  // Test configuration: keep Cinejoy and 7Movies enabled; temporarily disable Movy and Vidy.
   { tag: "Cinejoy", getStreams: getCinejoyStreams },
   { tag: "7Movies", getStreams: get7MoviesStreams },
   // splitVariants: one row per HLS quality + Auto (variant URLs resolved against baseUrl below)
