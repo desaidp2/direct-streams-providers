@@ -75,9 +75,14 @@ async function getStreams(tmdbId, type, season, episode) {
       Referer: "https://cinejoy.to/",
       Origin: "https://cinejoy.to",
     };
-    return resolved.streams.map((resolvedStream) => ({
+    return resolved.streams.map((resolvedStream) => {
+      const hls = resolvedStream.hls || {};
+      const hlsLabel = hls.variants
+        ? ` - ${hls.variants} quality variant(s)${hls.audioTracks ? ` / ${hls.audioTracks} audio track(s)` : ""}`
+        : "";
+      return ({
       name: `Cinejoy - ${resolvedStream.server} - HLS`,
-      title: (isTv ? `S${String(target.season).padStart(2, "0")}E${String(target.episode).padStart(2, "0")}` : "Movie") + ` - ${resolvedStream.server} - Auto HLS`,
+      title: (isTv ? `S${String(target.season).padStart(2, "0")}E${String(target.episode).padStart(2, "0")}` : "Movie") + ` - ${resolvedStream.server} - Auto HLS${hlsLabel}`,
       url: resolvedStream.url,
       quality: "Auto",
       headers,
@@ -88,7 +93,8 @@ async function getStreams(tmdbId, type, season, episode) {
         name: sub.display || sub.language || "subtitle",
         headers,
       })) : [],
-    }));
+      });
+    });
   } catch (err) {
     console.warn(`[Cinejoy] No stream for ${target.type}:${id}: ` + (err && err.message ? err.message : err));
     return [];
