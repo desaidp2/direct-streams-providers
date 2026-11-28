@@ -69,7 +69,7 @@ async function getStreams(tmdbId, type, season, episode) {
 
   try {
     const resolved = await runResolver(target);
-    console.info(`[Cinejoy] Resolved ${target.type}:${id} from ${resolved.streams.length} server(s): ${resolved.streams.map((s) => s.server).join(", ")}`);
+    console.info(`[Cinejoy] Resolved ${target.type}:${id}: ${resolved.streams.length}/${resolved.serversAttempted || resolved.streams.length} server(s): ${resolved.streams.map((s) => s.server).join(", ")}`);
     const headers = {
       "User-Agent": UA,
       Referer: "https://cinejoy.to/",
