@@ -218,6 +218,19 @@ async function encryptedRequest(path, payload) {
   return openResponse(responseBytes, request);
 }
 
+// Inspect the master while retaining its original URL, which preserves AUDIO group links.
+function parseHlsMetadata(text) {
+  if (typeof text !== "string" || !/^\\s*#EXTM3U(?:\\s|$)/.test(text)) return { valid: false, variants: 0, maxHeight: 0, audioTracks: 0 };
+  let variants = 0, maxHeight = 0, audioTracks = 0;
+  for (const line of text.split(/\\r?\\n/)) {
+    if (line.startsWith("#EXT-X-STREAM-INF:")) {
+      variants += 1;
+      const resolution = line.match(/(?:^|,)RESOLUTION=(\\d+)x(\\d+)/i);
+      if (resolution) maxHeight = Math.max(maxHeight, Number(resolution[2]) || 0);
+    } else if (line.startsWith("#EXT-X-MEDIA:") && /(?:^|,)TYPE=AUDIO(?:,|$)/i.test(line.slice(14))) audioTracks += 1;
+  }
+  return { valid: true, variants, maxHeight, audioTracks };
+}
 // Video-source subtitles come from the same gateway entry, separate from the
 // HLS master: [{type:"vtt", id:"en", url, language}]. Keep the ones we can serve.
 function sanitizeSubtitles(entry) {
@@ -312,15 +325,26 @@ async function resolve() {
         headers: { "User-Agent": UA, Referer: `${BASE_URL}/`, Origin: BASE_URL },
         signal: AbortSignal.timeout(3000),
       })).catch(() => null);
-      // Any host: a master answering 404/410 is a removed file, try the next
-      // server. A timeout only disqualifies the host known to need the probe.
+      // Keep timeouts non-fatal for ordinary CDNs; 404/410 are definitive misses.
       if (check ? [404, 410].includes(check.status) || (strictHost && !check.ok) : strictHost) {
         log(`Server ${server.name} playlist unreachable (${check?.status}), skipping...`);
         lastError = new Error(`Cinejoy: ${server.name} playlist HTTP ${check?.status || "timeout"}`);
         continue;
       }
+      let playlistText = "";
+      let hlsMetadata = { valid: true, variants: 0, maxHeight: 0, audioTracks: 0 };
+      if (check?.ok) {
+        playlistText = await check.text();
+        hlsMetadata = parseHlsMetadata(playlistText);
+        if (!hlsMetadata.valid) {
+          log(`Server ${server.name} returned a non-HLS response, skipping...`);
+          lastError = new Error(`Cinejoy: ${server.name} returned a non-HLS response`);
+          continue;
+        }
+      }
+      log(`Server ${server.name} HLS: ${hlsMetadata.variants} variant(s), max ${hlsMetadata.maxHeight || "unknown"}p, ${hlsMetadata.audioTracks} audio rendition(s)`);
       if (strictHost) {
-        const text = await check.text();
+        const text = playlistText;
         const allSubs = [...text.matchAll(/https?:\/\/[^\s"']+/g)].map(m => m[0]);
         const videoSub = allSubs.find(u => u.includes("/video/")) || allSubs[0];
         if (videoSub) {
@@ -369,6 +393,7 @@ async function resolve() {
         },
         server: server.name,
         target,
+        hls: hlsMetadata,
         subtitles: sanitizeSubtitles(primaryEntry),
       });
       log("Found working server:", server.name);
