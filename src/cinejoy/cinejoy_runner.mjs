@@ -220,14 +220,14 @@ async function encryptedRequest(path, payload) {
 
 // Inspect the master while retaining its original URL, which preserves AUDIO group links.
 function parseHlsMetadata(text) {
-  if (typeof text !== "string" || !/^\\s*#EXTM3U(?:\\s|$)/.test(text)) return { valid: false, variants: 0, maxHeight: 0, audioTracks: 0 };
+  if (typeof text !== "string" || !/^\s*#EXTM3U(?:\s|$)/.test(text)) return { valid: false, variants: 0, maxHeight: 0, audioTracks: 0 };
   let variants = 0, maxHeight = 0, audioTracks = 0;
-  for (const line of text.split(/\\r?\\n/)) {
+  for (const line of text.split(/\r?\n/)) {
     if (line.startsWith("#EXT-X-STREAM-INF:")) {
       variants += 1;
-      const resolution = line.match(/(?:^|,)RESOLUTION=(\\d+)x(\\d+)/i);
+      const resolution = line.match(/(?:^|,)RESOLUTION=(\d+)x(\d+)/i);
       if (resolution) maxHeight = Math.max(maxHeight, Number(resolution[2]) || 0);
-    } else if (line.startsWith("#EXT-X-MEDIA:") && /(?:^|,)TYPE=AUDIO(?:,|$)/i.test(line.slice(14))) audioTracks += 1;
+    } else if (line.startsWith("#EXT-X-MEDIA:") && /TYPE=AUDIO(?:,|$)/i.test(line)) audioTracks += 1;
   }
   return { valid: true, variants, maxHeight, audioTracks };
 }
