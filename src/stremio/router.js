@@ -108,7 +108,8 @@ const PROVIDERS = [
 // Optional remote bridge to the FMHY runtime. Its deployment contains the five requested
 // families and performs their site-specific discovery, extraction and HLS relaying.
 async function getFmhyStreams(type, rawId) {
-  const base = String(process.env.FMHY_ADDON_URL || "https://fmhy-webstream-test.onrender.com").replace(/\\/+$/, "");
+  let base = String(process.env.FMHY_ADDON_URL || "https://fmhy-webstream-test.onrender.com");
+  while (base.endsWith("/")) base = base.slice(0, -1);
   const fmhyType = type === "tv" ? "series" : "movie";
   const url = `${base}/stream/${fmhyType}/${encodeURIComponent(rawId)}.json`;
   try {
